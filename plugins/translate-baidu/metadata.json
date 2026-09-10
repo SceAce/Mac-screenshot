@@ -1,0 +1,15 @@
+{
+    "name": "mark-shot-translate-baidu",
+    "version": "1.0.0",
+    "description": "Baidu Translate provider backed by the Baidu Fanyi open platform API",
+    "vendor": "mark-shot",
+    "markShotMinVersion": "0.1.38",
+    "license": "MIT",
+    "capabilities": [
+        {
+            "type": "translation",
+            "providerId": "baidu-fanyi",
+            "displayName": "Baidu Translate"
+        }
+    ]
+}

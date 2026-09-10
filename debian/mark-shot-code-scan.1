@@ -1,0 +1,17 @@
+.TH MARK-SHOT-CODE-SCAN 1 "August 2026" "Mark Shot 0.1.49" "User Commands"
+.SH NAME
+mark-shot-code-scan \- decode barcodes and QR codes for Mark Shot
+.SH SYNOPSIS
+.B mark-shot-code-scan
+.RB [ \-\-format
+.BR json ]
+.I image
+.SH DESCRIPTION
+Decodes supported codes from an image and prints results and positions as JSON.
+It tries zxing-cpp, pyzbar, and OpenCV backends in that order.
+.SH ENVIRONMENT
+.TP
+.B MARK_SHOT_CODE_SCAN_PYTHON
+Python interpreter in a user-managed scanner virtual environment.
+.SH SEE ALSO
+.BR mark-shot (1)

@@ -1,0 +1,26 @@
+.TH MARK-SHOT-OCR 1 "August 2026" "Mark Shot 0.1.49" "User Commands"
+.SH NAME
+mark-shot-ocr \- recognize text in an image for Mark Shot
+.SH SYNOPSIS
+.B mark-shot-ocr
+.RB [ \-\-backend
+.IR auto | rapidocr | tesseract ]
+.RB [ \-\-format
+.BR json ]
+.I image
+.SH DESCRIPTION
+Recognizes text and prints token positions as JSON. The automatic backend
+prefers RapidOCR and falls back to Tesseract.
+.SH ENVIRONMENT
+.TP
+.B MARK_SHOT_OCR_LANG
+Tesseract language expression, such as \fBspa+eng\fR.
+.TP
+.B MARK_SHOT_OCR_MODEL_DIR
+Directory containing RapidOCR models.
+.TP
+.B MARK_SHOT_OCR_PYTHON
+Python interpreter in a user-managed RapidOCR virtual environment.
+.SH SEE ALSO
+.BR mark-shot (1),
+.BR tesseract (1)

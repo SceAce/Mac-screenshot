@@ -1,0 +1,416 @@
+name: Release AUR Bin
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, for example v0.1.0'
+        required: true
+        type: string
+      checkout_ref:
+        description: 'Optional source ref for manual runs, for example v0.1.27'
+        required: false
+        type: string
+      upload_to_release:
+        description: 'Attach manual-run pacman assets to the GitHub Release matching tag'
+        required: false
+        default: false
+        type: boolean
+      push_to_aur:
+        description: 'Publish mark-shot-bin to the AUR (use to retry after an AUR maintenance window)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  pkg:
+    name: Build pacman ${{ matrix.arch }} package
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            image: archlinux:base-devel
+            platform: arch
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+            image: ''
+            platform: ubuntu
+
+    steps:
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag || github.ref_name }}"
+          if [ -z "$TAG" ]; then
+            echo "No release tag was provided" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          CHECKOUT_INPUT="${{ inputs.checkout_ref }}"
+          if [ "${{ github.event_name }}" = "release" ] || [ "${{ github.event_name }}" = "push" ]; then
+            CHECKOUT_REF="$TAG"
+          elif [ -n "$CHECKOUT_INPUT" ]; then
+            CHECKOUT_REF="$CHECKOUT_INPUT"
+          else
+            CHECKOUT_REF="${{ github.ref_name }}"
+          fi
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "checkout_ref=$CHECKOUT_REF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.checkout_ref }}
+
+      - name: Install build dependencies (arch)
+        if: matrix.platform == 'arch'
+        shell: bash
+        run: |
+          pacman -Syu --noconfirm --needed \
+            cmake \
+            gcc \
+            git \
+            ninja \
+            pkgconf \
+            pipewire \
+            ffmpeg \
+            qt6-base \
+            qt6-wayland \
+            layer-shell-qt
+
+      - name: Install build dependencies (ubuntu)
+        if: matrix.platform == 'ubuntu'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            cmake \
+            git \
+            libarchive-tools \
+            libavcodec-dev \
+            libavfilter-dev \
+            libavformat-dev \
+            libgl1-mesa-dev \
+            libavutil-dev \
+            libpipewire-0.3-dev \
+            libswresample-dev \
+            libswscale-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            ninja-build \
+            pkg-config \
+            qt6-base-dev \
+            qt6-base-dev-tools \
+            qt6-wayland-dev \
+            zstd
+
+      - name: Configure (arch)
+        if: matrix.platform == 'arch'
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DMARK_SHOT_REQUIRE_FFMPEG=ON
+
+      - name: Configure (ubuntu)
+        if: matrix.platform == 'ubuntu'
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DMARK_SHOT_REQUIRE_FFMPEG=ON \
+            -DMARK_SHOT_WITH_LAYER_SHELL=OFF
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --parallel
+
+      - name: Stage install tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$PWD/stage"
+          rm -rf "$STAGE"
+          cmake --install build --prefix "$STAGE/usr"
+          install -Dm644 LICENSE "$STAGE/usr/share/licenses/mark-shot/LICENSE"
+          install -Dm644 README.md "$STAGE/usr/share/doc/mark-shot/README.md"
+          install -Dm644 README.zh-CN.md "$STAGE/usr/share/doc/mark-shot/README.zh-CN.md"
+
+      - name: Build pacman package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ steps.version.outputs.version }}"
+          ARCH="${{ matrix.arch }}"
+          PLATFORM="${{ matrix.platform }}"
+          PKGREL=1
+          ASSET="mark-shot-bin-${VERSION}-${PKGREL}-${ARCH}.pkg.tar.zst"
+          STAGE="$PWD/stage"
+
+          # 计算安装树总大小（字节），写入 .PKGINFO
+          PKG_SIZE=$(du -sb "$STAGE/usr" | cut -f1)
+          BUILD_DATE=$(date +%s)
+
+          # 构造 .PKGINFO 元数据文件，pacman 解析此文件获取包信息
+          # x86_64：Arch 容器构建，可声明 layer-shell-qt / ffmpeg
+          # aarch64：当前在 Ubuntu 22.04-arm 构建，so 代际与 Arch aarch64 可能不一致；
+          #          包描述中标明来源，并建议 aarch64 用户优先使用源码包 mark-shot
+          if [ "$PLATFORM" = "arch" ]; then
+              LAYER_SHELL_DEP="depend = layer-shell-qt"
+              PKGDESC="Qt 6 Wayland screenshot selection and annotation tool (prebuilt Arch binary)"
+              EXTRA_NOTE=""
+          else
+              LAYER_SHELL_DEP=""
+              PKGDESC="Qt 6 screenshot tool (prebuilt Ubuntu aarch64 binary; prefer source package mark-shot on Arch aarch64)"
+              EXTRA_NOTE="optdepend = mark-shot: preferred source package on Arch aarch64 when runtime libraries mismatch"
+          fi
+
+          # FFmpeg 大版本升级会把 soname 整体 +1（libavformat.so.62 -> .so.63），
+          # 只声明裸包名时旧包仍然“满足”依赖检查却链接不上。
+          # 这里按实际链接的 soname 生成 libavformat.so=62-64 形式的依赖，
+          # 让 pacman 在库代际不匹配时直接拒绝安装。
+          chmod +x scripts/arch-soname-depends.sh
+          # 单独捕获退出码：脚本失败时先打印安装树内容再退出，便于定位
+          SONAME_STATUS=0
+          SONAME_OUTPUT="$(./scripts/arch-soname-depends.sh --root "$STAGE/usr" --filter '^lib(av|sw)')" \
+              || SONAME_STATUS=$?
+          if [ "$SONAME_STATUS" -ne 0 ] || [ -z "$SONAME_OUTPUT" ]; then
+              echo "Failed to detect FFmpeg soname dependencies (exit ${SONAME_STATUS})" >&2
+              echo "Install tree contents:" >&2
+              find "$STAGE/usr" -type f -perm -u+x -exec ls -l {} + >&2 || true
+              exit 1
+          fi
+          FFMPEG_DEP=""
+          while IFS= read -r sodep; do
+              [ -n "$sodep" ] || continue
+              FFMPEG_DEP="${FFMPEG_DEP}depend = ${sodep}"$'\n'
+          done <<< "$SONAME_OUTPUT"
+          # 去掉结尾换行，避免 .PKGINFO 中出现空行
+          FFMPEG_DEP="${FFMPEG_DEP%$'\n'}"
+          echo "Detected FFmpeg soname dependencies:"
+          printf '%s\n' "$FFMPEG_DEP"
+
+          cat > "$STAGE/.PKGINFO" <<EOF
+          pkgname = mark-shot-bin
+          pkgver = ${VERSION}-${PKGREL}
+          pkgdesc = ${PKGDESC}
+          url = https://github.com/jswysnemc/mark-shot
+          builddate = ${BUILD_DATE}
+          packager = GitHub Actions <github-actions[bot]@users.noreply.github.com>
+          size = ${PKG_SIZE}
+          arch = ${ARCH}
+          license = MIT
+          depend = qt6-base
+          depend = qt6-svg
+          depend = qt6-wayland
+          ${LAYER_SHELL_DEP}
+          ${FFMPEG_DEP}
+          depend = pipewire
+          depend = grim
+          depend = wl-clipboard
+          depend = hicolor-icon-theme
+          depend = python
+          optdepend = xdg-desktop-portal: portal-based screenshot and screencast backend
+          optdepend = xclip: X11 clipboard backend
+          optdepend = tesseract: fallback OCR backend
+          optdepend = tesseract-data-chi_sim: simplified Chinese OCR data for tesseract
+          ${EXTRA_NOTE}
+          provides = mark-shot
+          conflicts = mark-shot
+          EOF
+
+          # 打包为 .pkg.tar.zst：.PKGINFO 必须在包根目录，随后是文件树
+          bsdtar --zstd -C "$STAGE" -cf "$ASSET" .PKGINFO usr
+          sha256sum "$ASSET" > "$ASSET.sha256"
+
+          {
+            echo "asset=$ASSET"
+            echo "checksum=$ASSET.sha256"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload pkg artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mark-shot-pkg-${{ steps.version.outputs.version }}-${{ matrix.arch }}
+          path: |
+            ${{ steps.package.outputs.asset }}
+            ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
+
+      - name: Upload pkg to release
+        if: github.event_name == 'release' || github.event_name == 'push' || inputs.upload_to_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          files: |
+            ${{ steps.package.outputs.asset }}
+            ${{ steps.package.outputs.checksum }}
+
+  aur:
+    name: Push mark-shot-bin to AUR
+    runs-on: ubuntu-latest
+    needs: pkg
+    # AUR 停机维护会让自动发布跳过推送，push_to_aur 用于服务恢复后手动补推
+    if: github.event_name == 'push' || github.event_name == 'release' || inputs.push_to_aur
+
+    steps:
+      - name: Resolve tag
+        id: version
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag || github.ref_name }}"
+          if [ -z "$TAG" ]; then
+            echo "No release tag was provided" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout packaging files
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+
+      - name: Download pacman assets from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p assets
+          for arch in x86_64 aarch64; do
+            ASSET="mark-shot-bin-${VERSION}-1-${arch}.pkg.tar.zst"
+            gh release download "$TAG" --repo "${{ github.repository }}" --pattern "$ASSET" --dir assets || {
+              echo "Asset $ASSET not found in release $TAG" >&2
+              exit 1
+            }
+          done
+
+      - name: Prepare AUR bin files
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p aur-bin-work
+          cp packaging/aur_bin/PKGBUILD aur-bin-work/PKGBUILD
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" aur-bin-work/PKGBUILD
+
+          # 回填 sha256 校验值，替换 PKGBUILD 中的 SKIP 占位符
+          SHA_X86_64=$(sha256sum "assets/mark-shot-bin-${VERSION}-1-x86_64.pkg.tar.zst" | awk '{print $1}')
+          SHA_AARCH64=$(sha256sum "assets/mark-shot-bin-${VERSION}-1-aarch64.pkg.tar.zst" | awk '{print $1}')
+          sed -i "s/^sha256sums_x86_64=('SKIP')/sha256sums_x86_64=('${SHA_X86_64}')/" aur-bin-work/PKGBUILD
+          sed -i "s/^sha256sums_aarch64=('SKIP')/sha256sums_aarch64=('${SHA_AARCH64}')/" aur-bin-work/PKGBUILD
+
+          echo "=== Prepared PKGBUILD ==="
+          cat aur-bin-work/PKGBUILD
+
+      - name: Generate .SRCINFO
+        run: |
+          docker run --rm \
+            -v "$PWD/aur-bin-work:/pkg" \
+            -w /pkg \
+            archlinux:base-devel \
+            bash -lc 'pacman -Sy --noconfirm sudo >/dev/null && useradd -m builder && chown -R builder:builder /pkg && su builder -c "cd /pkg && makepkg --printsrcinfo > .SRCINFO"'
+
+      - name: Configure SSH
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "AUR_SSH_PRIVATE_KEY is not set" >&2
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+
+      - name: Push to AUR
+        env:
+          GIT_SSH_COMMAND: ssh -i ~/.ssh/aur -o IdentitiesOnly=yes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # AUR 停机维护期间 git/SSH 端会直接拒绝连接，此时包已经构建并上传到
+          # Release，只是 AUR 元数据没同步。把维护停机与真实错误区分开，避免
+          # 整个发布因为上游停机被标记为失败；恢复后重跑本工作流即可补推。
+          CLONE_LOG="$(mktemp)"
+          for attempt in 1 2 3; do
+            # 输出重定向到文件后再回显，避免管道让 git 的退出码被 tee 覆盖
+            if git clone ssh://aur@aur.archlinux.org/mark-shot-bin.git aur-bin-repo > "$CLONE_LOG" 2>&1; then
+              cat "$CLONE_LOG"
+              break
+            fi
+            cat "$CLONE_LOG" >&2
+            echo "AUR clone failed on attempt ${attempt}" >&2
+            rm -rf aur-bin-repo
+            sleep $((attempt * 10))
+          done
+          if [ ! -d aur-bin-repo/.git ]; then
+            if grep -qi 'down due to maintenance' "$CLONE_LOG"; then
+              echo "::warning::AUR is down for maintenance; mark-shot-bin was not published. Re-run this workflow once the AUR is back."
+              exit 0
+            fi
+            echo "Failed to clone AUR repository mark-shot-bin" >&2
+            exit 1
+          fi
+
+          cp aur-bin-work/PKGBUILD aur-bin-work/.SRCINFO aur-bin-repo/
+          git -C aur-bin-repo branch -M master
+          git -C aur-bin-repo add PKGBUILD .SRCINFO
+
+          if git -C aur-bin-repo diff --cached --quiet; then
+            echo "AUR package mark-shot-bin is already up to date"
+            exit 0
+          fi
+
+          git -C aur-bin-repo commit -m "Update to ${{ steps.version.outputs.version }}-1"
+          PUSH_LOG="$(mktemp)"
+          for attempt in 1 2 3; do
+            if git -C aur-bin-repo push origin master > "$PUSH_LOG" 2>&1; then
+              cat "$PUSH_LOG"
+              exit 0
+            fi
+            cat "$PUSH_LOG" >&2
+            echo "AUR push failed on attempt ${attempt}; rebasing and retrying" >&2
+            git -C aur-bin-repo fetch origin master || true
+            git -C aur-bin-repo rebase origin/master || true
+            sleep $((attempt * 10))
+          done
+          if grep -qi 'down due to maintenance' "$PUSH_LOG"; then
+            echo "::warning::AUR is down for maintenance; mark-shot-bin was not published. Re-run this workflow once the AUR is back."
+            exit 0
+          fi
+          echo "Failed to push AUR package mark-shot-bin" >&2
+          exit 1

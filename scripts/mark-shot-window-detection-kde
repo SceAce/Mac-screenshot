@@ -1,0 +1,660 @@
+#!/usr/bin/env python3
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+
+
+MARKER = "MARK_SHOT_KDE_WINDOW_DETECTION"
+
+
+def env_int(name):
+    """读取整数环境变量。
+    参数:
+        name: 环境变量名称
+    返回:
+        解析成功时返回整数，否则返回 None
+    """
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def capture_rect():
+    """读取 Mark Shot 传入的截图区域。
+    参数:
+        无
+    返回:
+        有效时返回 (x, y, width, height)，否则返回 None
+    """
+    x = env_int("MARK_SHOT_CAPTURE_X")
+    y = env_int("MARK_SHOT_CAPTURE_Y")
+    width = env_int("MARK_SHOT_CAPTURE_WIDTH")
+    height = env_int("MARK_SHOT_CAPTURE_HEIGHT")
+    if x is None or y is None or width is None or height is None:
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return x, y, width, height
+
+
+def intersects(left, right):
+    """判断两个矩形是否相交。
+    参数:
+        left: 第一个矩形 (x, y, width, height)
+        right: 第二个矩形 (x, y, width, height)
+    返回:
+        相交时返回 True，否则返回 False
+    """
+    ax, ay, aw, ah = left
+    bx, by, bw, bh = right
+    return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
+
+
+def rectangle_difference(rect, occluder):
+    """返回 rect 被 occluder 覆盖后剩余的矩形区域。"""
+    x, y, width, height = rect
+    ox, oy, owidth, oheight = occluder
+    ix = max(x, ox)
+    iy = max(y, oy)
+    ix2 = min(x + width, ox + owidth)
+    iy2 = min(y + height, oy + oheight)
+
+    if ix >= ix2 or iy >= iy2:
+        return [rect]
+
+    pieces = []
+    if ix > x:
+        pieces.append((x, y, ix - x, height))
+    if ix2 < x + width:
+        pieces.append((ix2, y, x + width - ix2, height))
+    if iy > y:
+        pieces.append((ix, y, ix2 - ix, iy - y))
+    if iy2 < y + height:
+        pieces.append((ix, iy2, ix2 - ix, y + height - iy2))
+    return pieces
+
+
+def is_fully_occluded(rect, occluders):
+    """判断矩形是否被更高层窗口完全覆盖。"""
+    remaining = [rect]
+    for occluder in occluders:
+        remaining = [
+            piece
+            for candidate in remaining
+            for piece in rectangle_difference(candidate, occluder)
+        ]
+        if not remaining:
+            return True
+    return False
+
+
+def rect_adjustment():
+    """读取 KDE 窗口矩形偏移配置。
+    参数:
+        无
+    返回:
+        (x 偏移, y 偏移, 宽度偏移, 高度偏移)
+    """
+    return (
+        env_int("MARK_SHOT_KDE_OFFSET_X") or 0,
+        env_int("MARK_SHOT_KDE_OFFSET_Y") or 0,
+        env_int("MARK_SHOT_KDE_OFFSET_WIDTH") or 0,
+        env_int("MARK_SHOT_KDE_OFFSET_HEIGHT") or 0,
+    )
+
+
+def adjusted_rect(rect):
+    """应用环境变量中的窗口矩形偏移。
+    参数:
+        rect: 原始矩形 (x, y, width, height)
+    返回:
+        有效时返回调整后的矩形，否则返回 None
+    """
+    dx, dy, dw, dh = rect_adjustment()
+    x, y, width, height = rect
+    adjusted = (x + dx, y + dy, width + dw, height + dh)
+    if adjusted[2] <= 1 or adjusted[3] <= 1:
+        return None
+    return adjusted
+
+
+def qdbus_command():
+    """查找可用的 Qt D-Bus 命令。
+    参数:
+        无
+    返回:
+        qdbus6 或 qdbus 的可执行路径
+    """
+    for name in ("qdbus6", "qdbus"):
+        path = shutil.which(name)
+        if path:
+            return path
+    raise RuntimeError("qdbus6 or qdbus command not found")
+
+
+def run_command(command, timeout_seconds=2.0):
+    """运行外部命令并返回标准输出。
+    参数:
+        command: 命令参数列表
+        timeout_seconds: 超时时间，单位为秒
+    返回:
+        命令标准输出文本
+    """
+    result = subprocess.run(
+        command,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout_seconds,
+    )
+    return result.stdout
+
+
+def script_source(token):
+    """生成一次性 KWin JavaScript 脚本。
+    参数:
+        token: 本次请求唯一标识
+    返回:
+        JavaScript 源码字符串
+    """
+    return f"""
+(function() {{
+    const token = "{token}";
+
+    function value(object, key) {{
+        if (!object) {{
+            return null;
+        }}
+        const candidate = object[key];
+        if (typeof candidate === "function") {{
+            return candidate.call(object);
+        }}
+        return candidate;
+    }}
+
+    function number(input) {{
+        if (typeof input === "number" && isFinite(input)) {{
+            return input;
+        }}
+        if (typeof input === "string" && input.length > 0) {{
+            const parsed = Number(input);
+            return isFinite(parsed) ? parsed : null;
+        }}
+        return null;
+    }}
+
+    function boolValue(object, key) {{
+        const candidate = value(object, key);
+        return typeof candidate === "boolean" ? candidate : null;
+    }}
+
+    function rectFromObject(object) {{
+        if (!object) {{
+            return null;
+        }}
+        const x = number(value(object, "x"));
+        const y = number(value(object, "y"));
+        const width = number(value(object, "width"));
+        const height = number(value(object, "height"));
+        if (x === null || y === null || width === null || height === null) {{
+            return null;
+        }}
+        if (width <= 1 || height <= 1) {{
+            return null;
+        }}
+        return {{
+            x: Math.round(x),
+            y: Math.round(y),
+            width: Math.round(width),
+            height: Math.round(height),
+        }};
+    }}
+
+    function windowRect(window) {{
+        const direct = rectFromObject(window);
+        if (direct) {{
+            return direct;
+        }}
+        const names = ["frameGeometry", "bufferGeometry", "clientGeometry", "rect"];
+        for (let i = 0; i < names.length; i += 1) {{
+            const rect = rectFromObject(value(window, names[i]));
+            if (rect) {{
+                return rect;
+            }}
+        }}
+        return null;
+    }}
+
+    function outputName(window) {{
+        const output = value(window, "output");
+        const name = value(output, "name");
+        return typeof name === "string" ? name : "";
+    }}
+
+    function desktopNames(window) {{
+        const result = [];
+        const desktops = value(window, "desktops");
+        if (!desktops || typeof desktops.length !== "number") {{
+            return result;
+        }}
+        for (let i = 0; i < desktops.length; i += 1) {{
+            const name = value(desktops[i], "name");
+            const id = value(desktops[i], "id");
+            if (typeof name === "string" && name.length > 0) {{
+                result.push(name);
+            }} else if (typeof id === "string" && id.length > 0) {{
+                result.push(id);
+            }}
+        }}
+        return result;
+    }}
+
+    function shouldSkip(window) {{
+        const skipKeys = [
+            "deleted",
+            "desktopWindow",
+            "dock",
+            "tooltip",
+            "notification",
+            "criticalNotification",
+            "onScreenDisplay",
+            "comboBox",
+            "dndIcon",
+        ];
+        for (let i = 0; i < skipKeys.length; i += 1) {{
+            if (boolValue(window, skipKeys[i]) === true) {{
+                return true;
+            }}
+        }}
+        if (boolValue(window, "visible") === false) {{
+            return true;
+        }}
+        if (boolValue(window, "minimized") === true) {{
+            return true;
+        }}
+        if (boolValue(window, "onCurrentDesktop") === false
+                && boolValue(window, "onAllDesktops") !== true) {{
+            return true;
+        }}
+        if (boolValue(window, "onCurrentActivity") === false
+                && boolValue(window, "onAllActivities") !== true) {{
+            return true;
+        }}
+        return false;
+    }}
+
+    function appendWindow(result, window, zOrder) {{
+        if (!window || shouldSkip(window)) {{
+            return;
+        }}
+        const rect = windowRect(window);
+        if (!rect) {{
+            return;
+        }}
+        const item = {{
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+            zOrder: zOrder,
+        }};
+        const title = value(window, "caption");
+        const resourceClass = value(window, "resourceClass") || value(window, "windowClass");
+        const resourceName = value(window, "resourceName");
+        const output = outputName(window);
+        if (typeof title === "string" && title.length > 0) {{
+            item.title = title;
+        }}
+        if (typeof resourceClass === "string" && resourceClass.length > 0) {{
+            item.class = resourceClass;
+        }}
+        if (typeof resourceName === "string" && resourceName.length > 0) {{
+            item.instance = resourceName;
+        }}
+        if (output.length > 0) {{
+            item.output = output;
+        }}
+        const desktops = desktopNames(window);
+        if (desktops.length > 0) {{
+            item.desktops = desktops;
+        }}
+        for (const keyName of ["normalWindow", "dialog", "utility", "fullScreen", "waylandClient", "x11Client"]) {{
+            const flag = boolValue(window, keyName);
+            if (flag !== null) {{
+                item[keyName] = flag;
+            }}
+        }}
+        result.push(item);
+    }}
+
+    const result = [];
+    const windows = workspace.stackingOrder || [];
+    for (let i = 0; i < windows.length; i += 1) {{
+        appendWindow(result, windows[i], i);
+    }}
+    print("{MARKER} " + token + " " + JSON.stringify({{compositor: "kde", windows: result}}));
+}})();
+"""
+
+
+def write_script_file(token):
+    """写入临时 KWin JavaScript 文件。
+    参数:
+        token: 本次请求唯一标识
+    返回:
+        临时脚本文件路径
+    """
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        prefix="mark-shot-window-detection-kde-",
+        suffix=".js",
+        delete=False,
+    ) as file:
+        file.write(script_source(token))
+        return file.name
+
+
+def parse_script_id(output):
+    """解析 KWin 脚本加载返回的脚本编号。
+    参数:
+        output: qdbus 输出文本
+    返回:
+        脚本编号字符串
+    """
+    matches = re.findall(r"-?\d+", output)
+    if not matches:
+        raise RuntimeError("cannot parse KWin script id")
+    script_id = matches[-1]
+    if script_id == "-1":
+        raise RuntimeError("KWin refused to load script")
+    return script_id
+
+
+def load_script(qdbus, script_path, plugin_name):
+    """加载一次性 KWin 脚本。
+    参数:
+        qdbus: qdbus 可执行路径
+        script_path: JavaScript 文件路径
+        plugin_name: KWin 脚本实例名称
+    返回:
+        KWin 脚本编号字符串
+    """
+    output = run_command(
+        [
+            qdbus,
+            "org.kde.KWin",
+            "/Scripting",
+            "org.kde.kwin.Scripting.loadScript",
+            script_path,
+            plugin_name,
+        ],
+        timeout_seconds=2.0,
+    )
+    return parse_script_id(output)
+
+
+def run_script(qdbus, script_id):
+    """运行已加载的 KWin 脚本。
+    参数:
+        qdbus: qdbus 可执行路径
+        script_id: KWin 脚本编号
+    返回:
+        无
+    """
+    run_command(
+        [
+            qdbus,
+            "org.kde.KWin",
+            f"/Scripting/Script{script_id}",
+            "org.kde.kwin.Script.run",
+        ],
+        timeout_seconds=2.0,
+    )
+
+
+def unload_script(qdbus, plugin_name):
+    """卸载一次性 KWin 脚本。
+    参数:
+        qdbus: qdbus 可执行路径
+        plugin_name: KWin 脚本实例名称
+    返回:
+        无
+    """
+    try:
+        run_command(
+            [
+                qdbus,
+                "org.kde.KWin",
+                "/Scripting",
+                "org.kde.kwin.Scripting.unloadScript",
+                plugin_name,
+            ],
+            timeout_seconds=2.0,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+
+def journalctl_command():
+    """查找 journalctl 命令。
+    参数:
+        无
+    返回:
+        journalctl 可执行路径
+    """
+    path = shutil.which("journalctl")
+    if not path:
+        raise RuntimeError("journalctl command not found")
+    return path
+
+
+def journal_lines_since(since_epoch):
+    """读取本次脚本执行后的 KWin 日志。
+    参数:
+        since_epoch: Unix 时间戳秒数
+    返回:
+        日志行列表
+    """
+    journalctl = journalctl_command()
+    commands = [
+        [journalctl, "--user", "-o", "cat", "--since", f"@{since_epoch}"],
+        [journalctl, "-o", "cat", "_COMM=kwin_wayland", "--since", f"@{since_epoch}"],
+    ]
+    lines = []
+    for command in commands:
+        try:
+            output = run_command(command, timeout_seconds=2.0)
+        except (subprocess.SubprocessError, FileNotFoundError):
+            continue
+        lines.extend(output.splitlines())
+    return lines
+
+
+def extract_payload(lines, token):
+    """从 KWin 日志中提取本次请求的 JSON 负载。
+    参数:
+        lines: journalctl 输出行
+        token: 本次请求唯一标识
+    返回:
+        JSON 对象
+    """
+    prefix = f"{MARKER} {token} "
+    for line in reversed(lines):
+        index = line.find(prefix)
+        if index < 0:
+            continue
+        payload = line[index + len(prefix):].strip()
+        return json.loads(payload)
+    raise RuntimeError("KWin script result was not found in journal")
+
+
+def wait_for_payload(since_epoch, token):
+    """等待并读取 KWin 脚本输出。
+    参数:
+        since_epoch: Unix 时间戳秒数
+        token: 本次请求唯一标识
+    返回:
+        JSON 对象
+    """
+    timeout_ms = env_int("MARK_SHOT_KDE_JOURNAL_WAIT_MS") or 1000
+    timeout_ms = max(100, min(timeout_ms, 5000))
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    last_error = None
+    while True:
+        try:
+            return extract_payload(journal_lines_since(since_epoch), token)
+        except RuntimeError as error:
+            last_error = error
+            if time.monotonic() >= deadline:
+                raise last_error
+            time.sleep(0.05)
+
+
+def collect_kde_windows():
+    """通过 KWin 脚本收集窗口信息。
+    参数:
+        无
+    返回:
+        KWin 返回的窗口 JSON 对象
+    """
+    qdbus = qdbus_command()
+    token = uuid.uuid4().hex
+    plugin_name = "mark-shot-window-detection-kde-" + token
+    since_epoch = max(0, int(time.time()) - 2)
+    script_path = write_script_file(token)
+    try:
+        script_id = load_script(qdbus, script_path, plugin_name)
+        try:
+            run_script(qdbus, script_id)
+            return wait_for_payload(since_epoch, token)
+        finally:
+            unload_script(qdbus, plugin_name)
+    finally:
+        try:
+            os.unlink(script_path)
+        except OSError:
+            pass
+
+
+def normalize_window(window):
+    """规范化单个 KDE 窗口对象。
+    参数:
+        window: KWin 脚本返回的窗口字典
+    返回:
+        有效时返回窗口字典，否则返回 None
+    """
+    if not isinstance(window, dict):
+        return None
+    try:
+        rect = (
+            int(round(float(window.get("x", 0)))),
+            int(round(float(window.get("y", 0)))),
+            int(round(float(window.get("width", 0)))),
+            int(round(float(window.get("height", 0)))),
+        )
+    except (TypeError, ValueError):
+        return None
+    rect = adjusted_rect(rect)
+    if rect is None:
+        return None
+    result = {
+        "x": rect[0],
+        "y": rect[1],
+        "width": rect[2],
+        "height": rect[3],
+    }
+    for key in (
+        "title",
+        "class",
+        "instance",
+        "output",
+        "desktops",
+        "normalWindow",
+        "dialog",
+        "utility",
+        "fullScreen",
+        "waylandClient",
+        "x11Client",
+        "zOrder",
+    ):
+        if key in window:
+            result[key] = window[key]
+    return result
+
+
+def selected_windows(payload):
+    """按 Mark Shot 截图上下文筛选窗口。
+    参数:
+        payload: KWin 脚本返回的根 JSON 对象
+    返回:
+        筛选后的窗口列表
+    """
+    windows = payload.get("windows") if isinstance(payload, dict) else []
+    if not isinstance(windows, list):
+        return []
+
+    candidates = []
+    for window in windows:
+        item = normalize_window(window)
+        if item is not None:
+            candidates.append(item)
+
+    visible = []
+    seen = set()
+    occluders = []
+    for item in reversed(candidates):
+        rect = (item["x"], item["y"], item["width"], item["height"])
+        if rect in seen:
+            continue
+        seen.add(rect)
+        if is_fully_occluded(rect, occluders):
+            continue
+        visible.append(item)
+        occluders.append(rect)
+    visible.reverse()
+
+    capture = capture_rect()
+    target_output = os.environ.get("MARK_SHOT_CAPTURE_OUTPUT", "").strip()
+    all_outputs = os.environ.get("MARK_SHOT_CAPTURE_ALL_OUTPUTS") == "1"
+    result = []
+    for item in visible:
+        if target_output and not all_outputs and item.get("output") not in ("", target_output):
+            continue
+        rect = (item["x"], item["y"], item["width"], item["height"])
+        if capture is not None and not intersects(rect, capture):
+            continue
+        result.append(item)
+    return result
+
+
+def main():
+    """执行 KDE/KWin 窗口识别。
+    参数:
+        无
+    返回:
+        成功返回 0，失败返回 1
+    """
+    payload = collect_kde_windows()
+    windows = selected_windows(payload)
+    print(json.dumps({"compositor": "kde", "windows": windows}, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)

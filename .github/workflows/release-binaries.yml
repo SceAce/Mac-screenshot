@@ -1,0 +1,376 @@
+name: Release Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, for example v0.1.2'
+        required: true
+        type: string
+      upload_to_release:
+        description: 'Attach manual-run binary assets to the GitHub Release matching tag'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  linux:
+    name: Build Linux x86_64 binary package
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+
+    steps:
+      - name: Resolve tag
+        id: version
+        shell: bash
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag || github.ref_name }}"
+          if [ -z "$TAG" ]; then
+            echo "No release tag was provided" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            cmake \
+            ffmpeg \
+            gcc \
+            ninja \
+            onnxruntime-cpu \
+            pkgconf \
+            pipewire \
+            protobuf \
+            qt6-base \
+            qt6-wayland \
+            zxing-cpp \
+            layer-shell-qt
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DMARK_SHOT_REQUIRE_FFMPEG=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Package install tree
+        shell: bash
+        run: |
+          cmake --install build --prefix "$PWD/app"
+          install -Dm644 LICENSE app/share/licenses/mark-shot/LICENSE
+          install -Dm644 README.md app/share/doc/mark-shot/README.md
+          install -Dm644 README.zh-CN.md app/share/doc/mark-shot/README.zh-CN.md
+
+          ASSET="mark-shot-${{ steps.version.outputs.tag }}-linux-x86_64.tar.gz"
+          tar -C app -czf "$ASSET" .
+          sha256sum "$ASSET" > "$ASSET.sha256"
+
+      - name: Package plugin assets
+        shell: bash
+        run: |
+          mkdir -p plugin-assets
+          plugins=()
+          while IFS= read -r -d '' plugin; do
+            plugins+=("$plugin")
+          done < <(find app -type f -path '*/mark-shot/plugins/*' -name '*.so' -print0)
+          if [ "${#plugins[@]}" -eq 0 ]; then
+            echo "No provider plugin dynamic libraries were installed" >&2
+            exit 1
+          fi
+          for plugin in "${plugins[@]}"; do
+            base="$(basename "$plugin")"
+            provider="${base#libmark-shot-}"
+            provider="${provider%.so}"
+            asset="mark-shot-plugin-${provider}-${{ steps.version.outputs.tag }}-linux-x86_64.so"
+            cp "$plugin" "plugin-assets/$asset"
+            (cd plugin-assets && sha256sum "$asset" > "$asset.sha256")
+          done
+
+      - name: Upload binaries to release
+        if: github.event_name == 'release' || github.event_name == 'push' || inputs.upload_to_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          files: |
+            mark-shot-${{ steps.version.outputs.tag }}-linux-x86_64.tar.gz
+            mark-shot-${{ steps.version.outputs.tag }}-linux-x86_64.tar.gz.sha256
+            plugin-assets/*
+
+      - name: Upload binaries artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mark-shot-linux-x86_64-${{ steps.version.outputs.tag }}
+          path: |
+            mark-shot-${{ steps.version.outputs.tag }}-linux-x86_64.tar.gz
+            mark-shot-${{ steps.version.outputs.tag }}-linux-x86_64.tar.gz.sha256
+            plugin-assets/*
+          if-no-files-found: error
+
+  linux-arm64:
+    name: Build Linux arm64 binary package
+    runs-on: ubuntu-22.04-arm
+
+    steps:
+      - name: Resolve tag
+        id: version
+        shell: bash
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag || github.ref_name }}"
+          if [ -z "$TAG" ]; then
+            echo "No release tag was provided" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            libavcodec-dev \
+            libavformat-dev \
+            libgl1-mesa-dev \
+            libavutil-dev \
+            libpipewire-0.3-dev \
+            libswresample-dev \
+            libswscale-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            ninja-build \
+            pkg-config \
+            qt6-base-dev \
+            qt6-base-dev-tools
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DMARK_SHOT_REQUIRE_FFMPEG=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Package install tree
+        shell: bash
+        run: |
+          cmake --install build --prefix "$PWD/app"
+          install -Dm644 LICENSE app/share/licenses/mark-shot/LICENSE
+          install -Dm644 README.md app/share/doc/mark-shot/README.md
+          install -Dm644 README.zh-CN.md app/share/doc/mark-shot/README.zh-CN.md
+
+          ASSET="mark-shot-${{ steps.version.outputs.tag }}-linux-arm64.tar.gz"
+          tar -C app -czf "$ASSET" .
+          sha256sum "$ASSET" > "$ASSET.sha256"
+
+      - name: Package plugin assets
+        shell: bash
+        run: |
+          mkdir -p plugin-assets
+          plugins=()
+          while IFS= read -r -d '' plugin; do
+            plugins+=("$plugin")
+          done < <(find app -type f -path '*/mark-shot/plugins/*' -name '*.so' -print0)
+          if [ "${#plugins[@]}" -eq 0 ]; then
+            echo "No provider plugin dynamic libraries were installed" >&2
+            exit 1
+          fi
+          for plugin in "${plugins[@]}"; do
+            base="$(basename "$plugin")"
+            provider="${base#libmark-shot-}"
+            provider="${provider%.so}"
+            asset="mark-shot-plugin-${provider}-${{ steps.version.outputs.tag }}-linux-arm64.so"
+            cp "$plugin" "plugin-assets/$asset"
+            (cd plugin-assets && sha256sum "$asset" > "$asset.sha256")
+          done
+
+      - name: Upload binaries to release
+        if: github.event_name == 'release' || github.event_name == 'push' || inputs.upload_to_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          files: |
+            mark-shot-${{ steps.version.outputs.tag }}-linux-arm64.tar.gz
+            mark-shot-${{ steps.version.outputs.tag }}-linux-arm64.tar.gz.sha256
+            plugin-assets/*
+
+      - name: Upload binaries artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mark-shot-linux-arm64-${{ steps.version.outputs.tag }}
+          path: |
+            mark-shot-${{ steps.version.outputs.tag }}-linux-arm64.tar.gz
+            mark-shot-${{ steps.version.outputs.tag }}-linux-arm64.tar.gz.sha256
+            plugin-assets/*
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows x86_64 binary package
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Resolve tag
+        id: version
+        shell: bash
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag || github.ref_name }}"
+          if [ -z "$TAG" ]; then
+            echo "No release tag was provided" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            zip
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-cppwinrt
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-onnxruntime
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-tools
+            mingw-w64-ucrt-x86_64-zxing-cpp
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMARK_SHOT_REQUIRE_FFMPEG=ON \
+            -DMARK_SHOT_WITH_LAYER_SHELL=OFF \
+            -DMARK_SHOT_WITH_LIBPORTAL=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Package install tree
+        run: |
+          cmake --install build --prefix "$PWD/app"
+          for plugin in ocr-rapid translate-openai translate-tencent translate-baidu translate-youdao code-scan-zxing; do
+            test -f "$PWD/app/lib/mark-shot/plugins/mark-shot-${plugin}.dll" || {
+              echo "Expected provider plugin was not installed: ${plugin}" >&2
+              exit 1
+            }
+          done
+          install -Dm644 LICENSE app/share/licenses/mark-shot/LICENSE
+          install -Dm644 README.md app/share/doc/mark-shot/README.md
+          install -Dm644 README.zh-CN.md app/share/doc/mark-shot/README.zh-CN.md
+
+      - name: Deploy runtime libraries
+        run: |
+          bash scripts/windows-deploy-runtime.sh "$PWD/app/bin" "$PWD/app/bin/mark-shot.exe"
+
+      - name: Sign Windows binaries
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CODESIGN_CERTIFICATE_BASE64 }}
+          WINDOWS_CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_CERTIFICATE_PASSWORD }}
+          WINDOWS_CODESIGN_TIMESTAMP_URL: ${{ vars.WINDOWS_CODESIGN_TIMESTAMP_URL }}
+        run: |
+          ./scripts/windows-sign-artifact.ps1 -Path "$env:GITHUB_WORKSPACE/app"
+
+      - name: Package zip
+        run: |
+          ASSET="mark-shot-${{ steps.version.outputs.tag }}-windows-x86_64.zip"
+          (cd app && zip -r "../$ASSET" .)
+          sha256sum "$ASSET" > "$ASSET.sha256"
+
+      - name: Package plugin assets
+        run: |
+          mkdir -p plugin-assets
+          plugins=()
+          while IFS= read -r -d '' plugin; do
+            plugins+=("$plugin")
+          done < <(find app -type f -path '*/mark-shot/plugins/*' -name '*.dll' -print0)
+          if [ "${#plugins[@]}" -eq 0 ]; then
+            echo "No provider plugin dynamic libraries were installed" >&2
+            exit 1
+          fi
+          for plugin in "${plugins[@]}"; do
+            base="$(basename "$plugin")"
+            provider="${base#mark-shot-}"
+            provider="${provider%.dll}"
+            asset="mark-shot-plugin-${provider}-${{ steps.version.outputs.tag }}-windows-x86_64.dll"
+            cp "$plugin" "plugin-assets/$asset"
+            (cd plugin-assets && sha256sum "$asset" > "$asset.sha256")
+          done
+
+      - name: Upload binaries to release
+        if: github.event_name == 'release' || github.event_name == 'push' || inputs.upload_to_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          files: |
+            mark-shot-${{ steps.version.outputs.tag }}-windows-x86_64.zip
+            mark-shot-${{ steps.version.outputs.tag }}-windows-x86_64.zip.sha256
+            plugin-assets/*
+
+      - name: Upload binaries artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mark-shot-windows-x86_64-${{ steps.version.outputs.tag }}
+          path: |
+            mark-shot-${{ steps.version.outputs.tag }}-windows-x86_64.zip
+            mark-shot-${{ steps.version.outputs.tag }}-windows-x86_64.zip.sha256
+            plugin-assets/*
+          if-no-files-found: error

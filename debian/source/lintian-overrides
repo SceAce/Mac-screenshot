@@ -1,0 +1,3 @@
+# The manual pages are maintained with upstream's in-tree Debian packaging and
+# are being submitted to upstream as part of the same contribution.
+mark-shot source: maintainer-manual-page [debian/*.1]

@@ -1,0 +1,6 @@
+/.debhelper/
+/debhelper-build-stamp
+/files
+/mark-shot/
+/mark-shot.debhelper.log
+/mark-shot.substvars

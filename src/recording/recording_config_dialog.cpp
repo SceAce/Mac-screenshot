@@ -1,0 +1,623 @@
+#include "recording/recording_config_dialog.h"
+
+#include "app_config_store.h"
+#include "recording/audio/audio_capture_reader_factory.h"
+#include "recording/audio/audio_input_device_list.h"
+#include "recording/recording_dialog_config.h"
+#include "recording/recording_display_source.h"
+#include "recording/recording_file_naming.h"
+#include "settings/settings_design_tokens.h"
+#include "ui/i18n.h"
+#include "ui/interface_theme_config.h"
+#include "ui/theme.h"
+
+#include <QCheckBox>
+#include <QComboBox>
+#include <QCursor>
+#include <QDialogButtonBox>
+#include <QFileDialog>
+#include <QFormLayout>
+#include <QFont>
+#include <QGuiApplication>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QScreen>
+#include <QStringList>
+#include <QToolButton>
+#include <QVBoxLayout>
+
+namespace markshot::recording {
+namespace {
+
+/**
+ * 返回录制模式标题。
+ * @param mode 录制模式。
+ * @return 标题文本。
+ */
+QString titleForMode(RecordingMode mode)
+{
+    return mode == RecordingMode::Gif ? MS_TR("GIF Recording") : MS_TR("Video Recording");
+}
+
+/**
+ * 返回当前显示器。
+ * @return 当前显示器，无法判断时返回主显示器。
+ */
+QScreen *currentScreen()
+{
+    QScreen *screen = QGuiApplication::screenAt(QCursor::pos());
+    return screen ? screen : QGuiApplication::primaryScreen();
+}
+
+/**
+ * 查找当前显示器在来源列表中的下标。
+ * @param sources 显示器来源列表。
+ * @return 当前显示器来源下标。
+ */
+int currentDisplaySourceIndex(const QVector<DisplaySource> &sources)
+{
+    QScreen *screen = currentScreen();
+    if (!screen) {
+        return sources.isEmpty() ? -1 : 0;
+    }
+
+    for (int i = 0; i < sources.size(); ++i) {
+        const DisplaySource &source = sources.at(i);
+        if (!source.allOutputs && source.screenName == screen->name()) {
+            return i;
+        }
+    }
+    for (int i = 0; i < sources.size(); ++i) {
+        const DisplaySource &source = sources.at(i);
+        if (!source.allOutputs && source.geometry == screen->geometry()) {
+            return i;
+        }
+    }
+    return sources.isEmpty() ? -1 : 0;
+}
+
+/**
+ * 按持久化键查找显示器来源下标。
+ * @param sources 显示器来源列表。
+ * @param key 持久化键。
+ * @return 匹配下标，找不到时返回 -1。
+ */
+int displaySourceIndexForKey(const QVector<DisplaySource> &sources, const QString &key)
+{
+    if (key.trimmed().isEmpty()) {
+        return -1;
+    }
+    for (int i = 0; i < sources.size(); ++i) {
+        if (recordingDisplayPersistenceKey(sources.at(i)) == key) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/**
+ * 给帧率下拉框写入阶梯选项。
+ * @param combo 帧率下拉框。
+ * @param mode 录制模式。
+ * @return 无返回值。
+ */
+void populateFrameRateOptions(QComboBox *combo, RecordingMode mode, int requestedFps = -1)
+{
+    if (!combo) {
+        return;
+    }
+    combo->clear();
+    const QVector<int> values = mode == RecordingMode::Gif
+        ? QVector<int>{6, 8, 10, 12, 15, 20, 24, 30}
+        : QVector<int>{15, 24, 30, 48, 60};
+    const int fallback = mode == RecordingMode::Gif ? 12 : 30;
+    for (int fps : values) {
+        combo->addItem(MS_TR("%1 fps").arg(fps), fps);
+    }
+    const int requestedIndex = combo->findData(requestedFps);
+    const int fallbackIndex = combo->findData(fallback);
+    combo->setCurrentIndex(requestedIndex >= 0 ? requestedIndex : (fallbackIndex >= 0 ? fallbackIndex : 0));
+}
+
+/**
+ * 填充采集后端下拉框。
+ * @param combo 采集后端下拉框。
+ * @param requested 请求后端。
+ * @return 无返回值。
+ */
+void populateBackendOptions(QComboBox *combo, RecordingCaptureBackend requested)
+{
+    if (!combo) {
+        return;
+    }
+    combo->clear();
+    combo->addItem(QStringLiteral("Auto"), static_cast<int>(RecordingCaptureBackend::Auto));
+    combo->addItem(QStringLiteral("wlroots screencopy"), static_cast<int>(RecordingCaptureBackend::Wlroots));
+    combo->addItem(QStringLiteral("PipeWire"), static_cast<int>(RecordingCaptureBackend::PipeWire));
+    combo->addItem(QStringLiteral("Windows Graphics Capture"), static_cast<int>(RecordingCaptureBackend::WindowsWgc));
+    combo->addItem(QStringLiteral("Polling"), static_cast<int>(RecordingCaptureBackend::Polling));
+    const int index = combo->findData(static_cast<int>(requested));
+    combo->setCurrentIndex(index >= 0 ? index : 0);
+}
+
+/**
+ * 填充容器格式下拉框。
+ * @param combo 容器格式下拉框。
+ * @param requested 请求的容器格式。
+ * @return 无返回值。
+ */
+void populateContainerOptions(QComboBox *combo, RecordingContainerFormat requested)
+{
+    if (!combo) {
+        return;
+    }
+    combo->clear();
+    combo->addItem(QStringLiteral("MP4"), static_cast<int>(RecordingContainerFormat::Mp4));
+    combo->addItem(QStringLiteral("MKV"), static_cast<int>(RecordingContainerFormat::Mkv));
+    const int index = combo->findData(static_cast<int>(requested));
+    combo->setCurrentIndex(index >= 0 ? index : 0);
+    combo->setToolTip(MS_TR("MKV keeps a playable file if the recording is interrupted."));
+}
+
+/**
+ * 填充质量档位下拉框。
+ * @param combo 质量档位下拉框。
+ * @param requested 请求的质量档位。
+ * @return 无返回值。
+ */
+void populateQualityOptions(QComboBox *combo, RecordingQuality requested)
+{
+    if (!combo) {
+        return;
+    }
+    combo->clear();
+    combo->addItem(MS_TR("Balanced"), static_cast<int>(RecordingQuality::Balanced));
+    combo->addItem(MS_TR("Higher quality"), static_cast<int>(RecordingQuality::High));
+    combo->addItem(MS_TR("Smaller file"), static_cast<int>(RecordingQuality::Efficient));
+    const int index = combo->findData(static_cast<int>(requested));
+    combo->setCurrentIndex(index >= 0 ? index : 0);
+}
+
+/**
+ * 填充起录倒计时下拉框。
+ * @param combo 倒计时下拉框。
+ * @param requestedSeconds 请求的倒计时秒数。
+ * @return 无返回值。
+ */
+void populateCountdownOptions(QComboBox *combo, int requestedSeconds)
+{
+    if (!combo) {
+        return;
+    }
+    combo->clear();
+    combo->addItem(MS_TR("Off"), 0);
+    for (int seconds : {3, 5}) {
+        combo->addItem(MS_TR("%1 seconds").arg(seconds), seconds);
+    }
+    const int index = combo->findData(requestedSeconds);
+    combo->setCurrentIndex(index >= 0 ? index : 0);
+}
+
+/**
+ * 从下拉框数据读取容器格式。
+ * @param combo 容器格式下拉框。
+ * @return 容器格式。
+ */
+RecordingContainerFormat containerFromCombo(const QComboBox *combo)
+{
+    bool ok = false;
+    const int value = combo ? combo->currentData().toInt(&ok) : 0;
+    if (ok && static_cast<RecordingContainerFormat>(value) == RecordingContainerFormat::Mkv) {
+        return RecordingContainerFormat::Mkv;
+    }
+    return RecordingContainerFormat::Mp4;
+}
+
+/**
+ * 从下拉框数据读取质量档位。
+ * @param combo 质量档位下拉框。
+ * @return 质量档位。
+ */
+RecordingQuality qualityFromCombo(const QComboBox *combo)
+{
+    bool ok = false;
+    const int value = combo ? combo->currentData().toInt(&ok) : 0;
+    if (!ok) {
+        return RecordingQuality::Balanced;
+    }
+    switch (static_cast<RecordingQuality>(value)) {
+    case RecordingQuality::Efficient:
+        return RecordingQuality::Efficient;
+    case RecordingQuality::High:
+        return RecordingQuality::High;
+    case RecordingQuality::Balanced:
+        break;
+    }
+    return RecordingQuality::Balanced;
+}
+
+/**
+ * 从下拉框数据读取录制模式。
+ * @param combo 录制模式下拉框。
+ * @param fallback 默认录制模式。
+ * @return 录制模式。
+ */
+RecordingMode modeFromCombo(const QComboBox *combo, RecordingMode fallback)
+{
+    bool ok = false;
+    const int value = combo ? combo->currentData().toInt(&ok) : 0;
+    if (!ok) {
+        return fallback;
+    }
+    return value == static_cast<int>(RecordingMode::Video)
+        ? RecordingMode::Video
+        : RecordingMode::Gif;
+}
+
+/**
+ * 从下拉框数据读取采集后端。
+ * @param combo 采集后端下拉框。
+ * @return 采集后端。
+ */
+RecordingCaptureBackend backendFromCombo(const QComboBox *combo)
+{
+    bool ok = false;
+    const int value = combo ? combo->currentData().toInt(&ok) : 0;
+    if (!ok) {
+        return RecordingCaptureBackend::Auto;
+    }
+    switch (static_cast<RecordingCaptureBackend>(value)) {
+    case RecordingCaptureBackend::Wlroots:
+    case RecordingCaptureBackend::PipeWire:
+    case RecordingCaptureBackend::WindowsWgc:
+    case RecordingCaptureBackend::Polling:
+        return static_cast<RecordingCaptureBackend>(value);
+    case RecordingCaptureBackend::Auto:
+        break;
+    }
+    return RecordingCaptureBackend::Auto;
+}
+
+}  // namespace
+
+RecordingConfigDialog::RecordingConfigDialog(RecordingMode mode, QWidget *parent)
+    : QDialog(parent)
+    , m_mode(mode)
+    , m_sources(availableDisplaySources())
+{
+    const RecordingDialogConfig persisted = configuredRecordingDialogConfig(m_mode);
+    m_videoFps = persisted.videoFps;
+    m_gifFps = persisted.gifFps;
+    setWindowTitle(titleForMode(m_mode));
+    setModal(true);
+    setMinimumWidth(460);
+    setObjectName(QStringLiteral("recordingConfigDialog"));
+    applyDialogTheme();
+
+    auto *root = new QVBoxLayout(this);
+    root->setContentsMargins(20, 18, 20, 16);
+    root->setSpacing(12);
+
+    m_title = new QLabel(titleForMode(m_mode), this);
+    m_title->setObjectName(QStringLiteral("settingsCardTitle"));
+    m_title->setFont(markshot::theme::uiFont(16, QFont::DemiBold));
+    root->addWidget(m_title);
+
+    // 常用选项：类型、区域、显示器、帧率、音频、输出。
+    auto *form = new QFormLayout;
+    form->setHorizontalSpacing(16);
+    form->setVerticalSpacing(10);
+    root->addLayout(form);
+
+    m_modeSelector = new QComboBox(this);
+    m_modeSelector->addItem(QStringLiteral("GIF"), static_cast<int>(RecordingMode::Gif));
+    m_modeSelector->addItem(MS_TR("Video"), static_cast<int>(RecordingMode::Video));
+    const int modeIndex = m_modeSelector->findData(static_cast<int>(m_mode));
+    m_modeSelector->setCurrentIndex(modeIndex >= 0 ? modeIndex : 0);
+    form->addRow(MS_TR("Recording Type"), m_modeSelector);
+
+    m_scope = new QComboBox(this);
+    m_scope->addItem(MS_TR("Record selected display"), static_cast<int>(RecordingScope::Display));
+    m_scope->addItem(MS_TR("Select region after this dialog"), static_cast<int>(RecordingScope::Region));
+    const int scopeIndex = m_scope->findData(static_cast<int>(persisted.scope));
+    m_scope->setCurrentIndex(scopeIndex >= 0 ? scopeIndex : 0);
+    form->addRow(MS_TR("Capture Area"), m_scope);
+
+    m_display = new QComboBox(this);
+    for (int i = 0; i < m_sources.size(); ++i) {
+        const DisplaySource &source = m_sources.at(i);
+        const QString subtitle = QStringLiteral("%1 x %2").arg(source.geometry.width()).arg(source.geometry.height());
+        m_display->addItem(QStringLiteral("%1  %2").arg(source.title, subtitle), i);
+    }
+    const int savedSourceIndex = displaySourceIndexForKey(m_sources, persisted.displayKey);
+    const int currentSourceIndex = savedSourceIndex >= 0 ? savedSourceIndex : currentDisplaySourceIndex(m_sources);
+    if (currentSourceIndex >= 0) {
+        const int comboIndex = m_display->findData(currentSourceIndex);
+        m_display->setCurrentIndex(comboIndex >= 0 ? comboIndex : 0);
+    }
+    form->addRow(MS_TR("Display"), m_display);
+
+    m_fps = new QComboBox(this);
+    populateFrameRateOptions(m_fps, m_mode, fpsForMode(m_mode));
+    form->addRow(MS_TR("Frame Rate"), m_fps);
+
+    // 音频行：启用开关与输入设备选择合并成一行，避免再占一行空间。
+    auto *audioRow = new QWidget(this);
+    auto *audioLayout = new QHBoxLayout(audioRow);
+    audioLayout->setContentsMargins(0, 0, 0, 0);
+    audioLayout->setSpacing(8);
+    m_audio = new QCheckBox(audioRow);
+    m_audio->setChecked(persisted.includeAudio);
+    m_audio->setToolTip(MS_TR("Record audio"));
+    m_audioDevice = new QComboBox(audioRow);
+    m_audioDevice->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    populateAudioDevices(persisted.audioDevice);
+    audioLayout->addWidget(m_audio, 0, Qt::AlignVCenter);
+    audioLayout->addWidget(m_audioDevice, 1);
+    form->addRow(MS_TR("Audio"), audioRow);
+
+    m_outputPath = new QLineEdit(persisted.outputPath.isEmpty()
+                                     ? defaultRecordingPath(m_mode, persisted.container)
+                                     : normalizedRecordingPath(persisted.outputPath,
+                                                               m_mode,
+                                                               persisted.container),
+                                 this);
+    m_outputPathTouched = false;
+    auto *outputRow = new QWidget(this);
+    auto *outputLayout = new QHBoxLayout(outputRow);
+    outputLayout->setContentsMargins(0, 0, 0, 0);
+    outputLayout->setSpacing(8);
+    auto *outputBrowse = new QPushButton(MS_TR("Browse"), outputRow);
+    outputBrowse->setCursor(Qt::PointingHandCursor);
+    outputLayout->addWidget(m_outputPath, 1);
+    outputLayout->addWidget(outputBrowse);
+    form->addRow(MS_TR("Output"), outputRow);
+
+    // 低频选项折叠进“高级选项”，默认收起，保持首屏简洁。
+    m_advancedToggle = new QToolButton(this);
+    m_advancedToggle->setObjectName(QStringLiteral("recordingAdvancedToggle"));
+    m_advancedToggle->setText(MS_TR("Advanced Options"));
+    m_advancedToggle->setCheckable(true);
+    m_advancedToggle->setChecked(false);
+    m_advancedToggle->setArrowType(Qt::RightArrow);
+    m_advancedToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_advancedToggle->setCursor(Qt::PointingHandCursor);
+    root->addWidget(m_advancedToggle);
+
+    m_advancedPanel = new QWidget(this);
+    auto *advancedForm = new QFormLayout(m_advancedPanel);
+    advancedForm->setContentsMargins(0, 0, 0, 0);
+    advancedForm->setHorizontalSpacing(16);
+    advancedForm->setVerticalSpacing(10);
+
+    m_container = new QComboBox(m_advancedPanel);
+    populateContainerOptions(m_container, persisted.container);
+    advancedForm->addRow(MS_TR("Container"), m_container);
+
+    m_quality = new QComboBox(m_advancedPanel);
+    populateQualityOptions(m_quality, persisted.quality);
+    advancedForm->addRow(MS_TR("Quality"), m_quality);
+
+    m_countdown = new QComboBox(m_advancedPanel);
+    populateCountdownOptions(m_countdown, persisted.countdownSeconds);
+    advancedForm->addRow(MS_TR("Countdown"), m_countdown);
+
+    m_backend = new QComboBox(m_advancedPanel);
+    populateBackendOptions(m_backend, persisted.backend);
+    advancedForm->addRow(MS_TR("Recording Backend"), m_backend);
+
+    m_advancedPanel->setVisible(false);
+    root->addWidget(m_advancedPanel);
+    connect(m_advancedToggle, &QToolButton::toggled, this, [this](bool expanded) {
+        m_advancedToggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+        m_advancedPanel->setVisible(expanded);
+        adjustSize();
+    });
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel | QDialogButtonBox::Ok, this);
+    buttons->button(QDialogButtonBox::Ok)->setText(MS_TR("Start"));
+    buttons->button(QDialogButtonBox::Ok)->setProperty("role", QStringLiteral("primary"));
+    buttons->button(QDialogButtonBox::Ok)->setCursor(Qt::PointingHandCursor);
+    buttons->button(QDialogButtonBox::Cancel)->setText(MS_TR("Cancel"));
+    buttons->button(QDialogButtonBox::Cancel)->setCursor(Qt::PointingHandCursor);
+    root->addWidget(buttons);
+
+    connect(outputBrowse, &QPushButton::clicked, this, [this] { browseOutputPath(); });
+    connect(m_modeSelector, &QComboBox::currentIndexChanged, this, [this] {
+        const RecordingMode nextMode = modeFromCombo(m_modeSelector, m_mode);
+        if (nextMode == m_mode) {
+            return;
+        }
+        storeCurrentFpsForMode(m_mode);
+        const bool preserveOutput = m_outputPathTouched
+            && m_outputPath
+            && !m_outputPath->text().trimmed().isEmpty();
+        m_mode = nextMode;
+        setWindowTitle(titleForMode(m_mode));
+        if (m_title) {
+            m_title->setText(titleForMode(m_mode));
+        }
+        populateFrameRateOptions(m_fps, m_mode, fpsForMode(m_mode));
+        updateAudioControls();
+        updateVideoOnlyControls();
+        refreshOutputExtension(preserveOutput);
+    });
+    connect(m_container, &QComboBox::currentIndexChanged, this, [this] {
+        // 切换容器后输出文件的扩展名要同步跟随
+        refreshOutputExtension(m_outputPathTouched);
+    });
+    connect(m_outputPath, &QLineEdit::textEdited, this, [this] {
+        m_outputPathTouched = true;
+    });
+    connect(m_audio, &QCheckBox::toggled, this, [this] { updateAudioControls(); });
+    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+
+    updateAudioControls();
+    updateVideoOnlyControls();
+}
+
+void RecordingConfigDialog::applyDialogTheme()
+{
+    // 与设置界面共用同一套主题：深/浅色跟随应用配置，避免录制入口
+    // 出现与主界面割裂的系统原生灰色样式。
+    bool ok = false;
+    const QJsonObject root = markshot::readAppConfigRoot(&ok);
+    const markshot::ui::UiThemeMode configuredMode = ok
+        ? markshot::ui::uiThemeModeFromConfigRoot(root)
+        : markshot::ui::UiThemeMode::System;
+    const markshot::ui::UiThemeMode effectiveMode =
+        markshot::ui::effectiveUiThemeMode(configuredMode);
+    setPalette(markshot::settings::tokens::settingsPalette(effectiveMode));
+    setStyleSheet(markshot::settings::tokens::settingsStyleSheet(effectiveMode));
+}
+
+void RecordingConfigDialog::populateAudioDevices(const QString &persistedDevice)
+{
+    if (!m_audioDevice) {
+        return;
+    }
+    m_audioDevice->clear();
+    m_audioDevice->addItem(MS_TR("System default input"), QString());
+    const QVector<AudioInputDevice> devices = listAudioInputDevices();
+    for (const AudioInputDevice &device : devices) {
+        const QString label = device.isMonitor
+            ? MS_TR("%1 (system audio)").arg(device.description)
+            : device.description;
+        m_audioDevice->addItem(label, device.name);
+        m_audioDevice->setItemData(m_audioDevice->count() - 1, device.name, Qt::ToolTipRole);
+    }
+    const int persistedIndex = m_audioDevice->findData(persistedDevice.trimmed());
+    m_audioDevice->setCurrentIndex(persistedIndex >= 0 ? persistedIndex : 0);
+}
+
+RecordingOptions RecordingConfigDialog::options() const
+{
+    RecordingOptions result;
+    result.mode = m_mode;
+    bool fpsOk = false;
+    const int fallbackFps = m_mode == RecordingMode::Gif ? 12 : 30;
+    const int selectedFps = m_fps ? m_fps->currentData().toInt(&fpsOk) : fallbackFps;
+    result.fps = fpsOk ? selectedFps : fallbackFps;
+    result.includeAudio = m_audio && m_audio->isEnabled() && m_audio->isChecked();
+    result.audioDevice = m_audioDevice ? m_audioDevice->currentData().toString() : QString();
+    result.captureBackend = backendFromCombo(m_backend);
+    bool countdownOk = false;
+    const int countdown = m_countdown ? m_countdown->currentData().toInt(&countdownOk) : 0;
+    result.countdownSeconds = countdownOk ? countdown : 0;
+    result.container = containerFromCombo(m_container);
+    result.quality = qualityFromCombo(m_quality);
+    result.scope = static_cast<RecordingScope>(m_scope ? m_scope->currentData().toInt() : static_cast<int>(RecordingScope::Region));
+    result.outputPath = normalizedRecordingPath(m_outputPath ? m_outputPath->text() : QString(),
+                                                m_mode,
+                                                result.container);
+
+    const int sourceIndex = m_display ? m_display->currentData().toInt() : -1;
+    if (sourceIndex >= 0 && sourceIndex < m_sources.size()) {
+        result.display = m_sources.at(sourceIndex);
+    }
+    if (result.scope == RecordingScope::Display) {
+        result.captureGeometry = result.display.geometry;
+    }
+    return result;
+}
+
+void RecordingConfigDialog::browseOutputPath()
+{
+    const RecordingContainerFormat container = containerFromCombo(m_container);
+    const QString extension = recordingContainerExtension(container);
+    const QString filter = m_mode == RecordingMode::Gif
+        ? MS_TR("GIF Images (*.gif)")
+        : MS_TR("Videos (*.%1)").arg(extension);
+    const QString path = QFileDialog::getSaveFileName(
+        this,
+        MS_TR("Save Recording"),
+        m_outputPath ? m_outputPath->text() : defaultRecordingPath(m_mode, container),
+        filter);
+    if (!path.isEmpty() && m_outputPath) {
+        m_outputPathTouched = true;
+        m_outputPath->setText(normalizedRecordingPath(path, m_mode, container));
+    }
+}
+
+void RecordingConfigDialog::refreshOutputExtension(bool preserveCurrentPath)
+{
+    if (!m_outputPath) {
+        return;
+    }
+    const RecordingContainerFormat container = containerFromCombo(m_container);
+    const bool reusable = preserveCurrentPath && !m_outputPath->text().trimmed().isEmpty();
+    m_outputPath->setText(reusable
+                              ? normalizedRecordingPath(m_outputPath->text(), m_mode, container)
+                              : defaultRecordingPath(m_mode, container));
+}
+
+void RecordingConfigDialog::updateVideoOnlyControls()
+{
+    // GIF 使用自身容器与逐帧调色板，容器与质量档位仅对视频有效
+    const bool videoMode = m_mode == RecordingMode::Video;
+    if (m_container) {
+        m_container->setEnabled(videoMode);
+    }
+    if (m_quality) {
+        m_quality->setEnabled(videoMode);
+    }
+}
+
+void RecordingConfigDialog::updateAudioControls()
+{
+    if (!m_audio) {
+        return;
+    }
+    const bool videoMode = m_mode == RecordingMode::Video;
+    const bool audioAvailable = recordingAudioCaptureAvailable();
+    m_audio->setEnabled(videoMode && audioAvailable);
+    if (!videoMode) {
+        m_audio->setChecked(false);
+        m_audio->setToolTip(MS_TR("GIF recording does not include audio."));
+    } else if (!audioAvailable) {
+        m_audio->setChecked(false);
+        m_audio->setToolTip(recordingAudioUnavailableText());
+    } else {
+        m_audio->setToolTip(MS_TR("Record audio"));
+    }
+    if (m_audioDevice) {
+        m_audioDevice->setEnabled(m_audio->isEnabled() && m_audio->isChecked());
+    }
+}
+
+/**
+ * 读取指定录制模式的帧率状态。
+ * @param mode 录制模式。
+ * @return 帧率。
+ */
+int RecordingConfigDialog::fpsForMode(RecordingMode mode) const
+{
+    return mode == RecordingMode::Gif ? m_gifFps : m_videoFps;
+}
+
+/**
+ * 保存当前帧率下拉框状态到指定录制模式。
+ * @param mode 录制模式。
+ * @return 无返回值。
+ */
+void RecordingConfigDialog::storeCurrentFpsForMode(RecordingMode mode)
+{
+    if (!m_fps) {
+        return;
+    }
+    bool ok = false;
+    const int value = m_fps->currentData().toInt(&ok);
+    if (!ok) {
+        return;
+    }
+    if (mode == RecordingMode::Gif) {
+        m_gifFps = value;
+        return;
+    }
+    m_videoFps = value;
+}
+
+}  // namespace markshot::recording

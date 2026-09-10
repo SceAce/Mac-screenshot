@@ -1,0 +1,301 @@
+name: Release AppImages
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, for example v0.1.16'
+        required: true
+        type: string
+      checkout_ref:
+        description: 'Optional source ref for manual runs, for example dev'
+        required: false
+        type: string
+      upload_to_release:
+        description: 'Attach manual-run AppImage assets to the GitHub Release matching tag'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  APPIMAGE_EXTRACT_AND_RUN: 1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NO_STRIP: 1
+
+jobs:
+  appimage:
+    name: Build AppImage
+    runs-on: ubuntu-latest
+    container:
+      image: debian:12
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      asset: ${{ steps.package.outputs.asset }}
+      checksum: ${{ steps.package.outputs.checksum }}
+
+    steps:
+      - name: Resolve tag
+        id: version
+        shell: bash
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag || github.ref_name }}"
+          if [ -z "$TAG" ]; then
+            echo "【Linux发布】【AppImage版本】没有提供发布标签" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          CHECKOUT_INPUT="${{ inputs.checkout_ref }}"
+          if [ "${{ github.event_name }}" = "release" ] || [ "${{ github.event_name }}" = "push" ]; then
+            CHECKOUT_REF="$TAG"
+          elif [ -n "$CHECKOUT_INPUT" ]; then
+            CHECKOUT_REF="$CHECKOUT_INPUT"
+          else
+            CHECKOUT_REF="${{ github.ref_name }}"
+          fi
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "checkout_ref=$CHECKOUT_REF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            appstream \
+            build-essential \
+            ca-certificates \
+            cmake \
+            desktop-file-utils \
+            file \
+            ffmpeg \
+            git \
+            libavcodec-dev \
+            libavfilter-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libgl1-mesa-dev \
+            libpipewire-0.3-dev \
+            libswresample-dev \
+            libswscale-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            ninja-build \
+            patchelf \
+            pkg-config \
+            qt6-base-dev \
+            qt6-base-dev-tools \
+            qt6-svg-dev \
+            qt6-tools-dev-tools \
+            qt6-wayland-dev \
+            wget
+
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.checkout_ref }}
+
+      - name: Download AppImage tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          wget -q -O linuxdeploy-x86_64.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q -O linuxdeploy-plugin-qt-x86_64.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-qt-x86_64.AppImage
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DMARK_SHOT_REQUIRE_FFMPEG=ON \
+            -DMARK_SHOT_WITH_LAYER_SHELL=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Install into AppDir
+        shell: bash
+        run: |
+          set -euo pipefail
+          APPDIR="$PWD/AppDir"
+          rm -rf "$APPDIR"
+          DESTDIR="$APPDIR" cmake --install build
+          install -Dm644 LICENSE "$APPDIR/usr/share/licenses/mark-shot/LICENSE"
+          install -Dm644 README.md "$APPDIR/usr/share/doc/mark-shot/README.md"
+          install -Dm644 README.zh-CN.md "$APPDIR/usr/share/doc/mark-shot/README.zh-CN.md"
+          sed -i -E 's#^Exec=[^ ]*/mark-shot( |$)#Exec=mark-shot\1#' \
+            "$APPDIR"/usr/share/applications/*.desktop
+
+      - name: Assert runtime dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          BINARY="$PWD/AppDir/usr/bin/mark-shot"
+          if ldd "$BINARY" | grep -Ei 'LayerShellQt|layershell'; then
+            echo "【Linux发布】【AppImage依赖】主程序意外直接链接 LayerShellQt" >&2
+            exit 1
+          fi
+          for library in libavcodec libavfilter libavformat libavutil libswresample libswscale; do
+            ldd "$BINARY" | grep -F "$library"
+          done
+
+      - name: Build AppImage
+        id: package
+        shell: bash
+        env:
+          QMAKE: /usr/bin/qmake6
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          APPDIR="$PWD/AppDir"
+
+          ./linuxdeploy-x86_64.AppImage \
+            --appdir "$APPDIR" \
+            --executable "$APPDIR/usr/bin/mark-shot" \
+            --desktop-file "$APPDIR/usr/share/applications/mark-shot.desktop" \
+            --icon-file data/icons/hicolor/scalable/apps/mark-shot.svg \
+            --plugin qt \
+            --output appimage
+
+          mapfile -t appimages < <(find . -maxdepth 1 -type f -name '*.AppImage' \
+            ! -name 'linuxdeploy-x86_64.AppImage' \
+            ! -name 'linuxdeploy-plugin-qt-x86_64.AppImage' \
+            -print)
+          if [ "${#appimages[@]}" -ne 1 ]; then
+            printf '【Linux发布】【AppImage产物】应生成一个 AppImage，实际生成 %s 个\n' "${#appimages[@]}" >&2
+            printf '【Linux发布】【AppImage产物】%s\n' "${appimages[@]}" >&2
+            exit 1
+          fi
+
+          ASSET="mark-shot-${{ steps.version.outputs.tag }}-linux-x86_64.AppImage"
+          mv "${appimages[0]}" "$ASSET"
+          sha256sum "$ASSET" > "$ASSET.sha256"
+          {
+            echo "asset=$ASSET"
+            echo "checksum=$ASSET.sha256"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Assert glibc compatibility
+        shell: bash
+        env:
+          MAX_GLIBC_VERSION: "2.36"
+        run: |
+          set -euo pipefail
+
+          # 【Linux发布】【AppImage兼容】1. 扫描 AppDir 内全部 ELF 文件声明的 glibc 符号版本
+          MAX_REQUIRED="$(
+            while IFS= read -r -d '' path; do
+              if file -b "$path" | grep -q 'ELF'; then
+                strings "$path" | grep -oE 'GLIBC_[0-9]+\.[0-9]+(\.[0-9]+)?' || true
+              fi
+            done < <(find "$PWD/AppDir/usr" -type f -print0)
+          )"
+          MAX_REQUIRED="$(printf '%s\n' "$MAX_REQUIRED" | sed 's/^GLIBC_//' | sort -V | tail -n1)"
+
+          # 【Linux发布】【AppImage兼容】2. 拒绝高于 Debian 12 基线的符号需求
+          if [ -z "$MAX_REQUIRED" ]; then
+            echo "【Linux发布】【AppImage兼容】AppDir 中没有找到 GLIBC 符号版本" >&2
+            exit 1
+          fi
+          if dpkg --compare-versions "$MAX_REQUIRED" gt "$MAX_GLIBC_VERSION"; then
+            echo "【Linux发布】【AppImage兼容】AppImage 需要 GLIBC_$MAX_REQUIRED，允许的最高版本是 GLIBC_$MAX_GLIBC_VERSION" >&2
+            exit 1
+          fi
+          echo "【Linux发布】【AppImage兼容】AppImage 载荷最高需要 GLIBC_$MAX_REQUIRED"
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mark-shot-appimage-${{ steps.version.outputs.tag }}
+          path: |
+            ${{ steps.package.outputs.asset }}
+            ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
+
+  appimage-ubuntu2404:
+    name: Verify AppImage on Ubuntu 24.04
+    needs: appimage
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:24.04
+
+    steps:
+      - name: Install runtime prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+
+          # 【Linux发布】【AppImage验证】1. 更新 Ubuntu 24.04 软件包索引
+          apt-get update
+
+          # 【Linux发布】【AppImage验证】2. 安装 AppImage 外部系统库和虚拟显示服务
+          apt-get install -y --no-install-recommends \
+            ca-certificates \
+            libasound2t64 \
+            libcom-err2 \
+            libdrm2 \
+            libegl1 \
+            libfontconfig1 \
+            libfreetype6 \
+            libfribidi0 \
+            libgcc-s1 \
+            libgl1 \
+            libglx0 \
+            libgmp10 \
+            libgpg-error0 \
+            libharfbuzz0b \
+            libice6 \
+            libopengl0 \
+            libpipewire-0.3-0t64 \
+            libsm6 \
+            libstdc++6 \
+            libwayland-client0 \
+            libx11-6 \
+            libx11-xcb1 \
+            libxcb-dri3-0 \
+            libxcb1 \
+            xvfb \
+            zlib1g
+
+      - name: Download AppImage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mark-shot-appimage-${{ needs.appimage.outputs.tag }}
+
+      - name: Verify AppImage starts
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          set -euo pipefail
+
+          # 【Linux发布】【AppImage验证】1. 授予 AppImage 执行权限
+          chmod +x "${{ needs.appimage.outputs.asset }}"
+
+          # 【Linux发布】【AppImage验证】2. 在虚拟 X11 会话中启动最终产物
+          xvfb-run -a "./${{ needs.appimage.outputs.asset }}" --version
+
+      - name: Upload AppImage to release
+        if: github.event_name == 'release' || github.event_name == 'push' || inputs.upload_to_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.appimage.outputs.tag }}
+          files: |
+            ${{ needs.appimage.outputs.asset }}
+            ${{ needs.appimage.outputs.checksum }}

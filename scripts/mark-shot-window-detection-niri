@@ -1,0 +1,645 @@
+#!/usr/bin/env python3
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+
+def add_shared_module_path():
+    """将源码目录或安装目录中的共享模块加入搜索路径。
+    返回: 无返回值
+    """
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    prefix_dir = os.path.dirname(script_dir)
+    candidates = (
+        os.path.join(script_dir, "lib"),
+        os.path.join(prefix_dir, "share", "mark-shot", "python"),
+    )
+    for candidate in candidates:
+        if os.path.isdir(candidate) and candidate not in sys.path:
+            sys.path.insert(0, candidate)
+
+
+add_shared_module_path()
+
+from mark_shot_window_detection.niri_dms import dms_insets
+from mark_shot_window_detection.niri_geometry import append_candidate
+from mark_shot_window_detection.niri_geometry import env_int
+from mark_shot_window_detection.niri_geometry import output_origin
+from mark_shot_window_detection.niri_geometry import output_rect
+from mark_shot_window_detection.niri_geometry import output_size
+from mark_shot_window_detection.niri_geometry import union_rect
+
+
+def niri_json(command):
+    niri = shutil.which("niri")
+    if not niri:
+        raise RuntimeError("niri command not found")
+    result = subprocess.run(
+        [niri, "msg", "-j", *command],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=2,
+    )
+    return json.loads(result.stdout)
+
+
+def niri_layers():
+    try:
+        layers = niri_json(["layers"])
+    except (RuntimeError, subprocess.SubprocessError, json.JSONDecodeError):
+        return []
+    return layers if isinstance(layers, list) else []
+
+
+def strip_json_comments(text):
+    result = []
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(text):
+        char = text[index]
+        next_char = text[index + 1] if index + 1 < len(text) else ""
+
+        if in_string:
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+
+        if char == '"':
+            in_string = True
+            result.append(char)
+            index += 1
+            continue
+
+        if char == "/" and next_char == "/":
+            index += 2
+            while index < len(text) and text[index] not in "\r\n":
+                index += 1
+            continue
+
+        if char == "/" and next_char == "*":
+            index += 2
+            while index + 1 < len(text) and not (text[index] == "*" and text[index + 1] == "/"):
+                index += 1
+            index += 2
+            continue
+
+        result.append(char)
+        index += 1
+
+    return "".join(result)
+
+
+def config_home():
+    return os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+
+
+def waybar_config_paths():
+    names = ("config", "config.jsonc", "config.json")
+    candidates = [os.path.join(config_home(), "waybar", name) for name in names]
+    xdg_dirs = os.environ.get("XDG_CONFIG_DIRS", "/etc/xdg")
+    for base in xdg_dirs.split(":"):
+        if base:
+            candidates.extend(os.path.join(base, "waybar", name) for name in names)
+    return candidates
+
+
+def waybar_settings():
+    """读取 waybar 配置中与布局相关的设置。
+    返回: 字典 {position, height, width, exclusive}，未配置项使用默认值
+        （position 默认 "top"，height/width 默认 None 表示未知，exclusive 默认 True）"""
+    settings = {"position": "top", "height": None, "width": None, "exclusive": True}
+    for path in waybar_config_paths():
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                payload = json.loads(strip_json_comments(file.read()))
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        configs = payload if isinstance(payload, list) else [payload]
+        for config in configs:
+            if not isinstance(config, dict):
+                continue
+            position = config.get("position")
+            if position in ("top", "bottom", "left", "right"):
+                settings["position"] = position
+            if isinstance(config.get("height"), (int, float)) and config["height"] > 0:
+                settings["height"] = float(config["height"])
+            if isinstance(config.get("width"), (int, float)) and config["width"] > 0:
+                settings["width"] = float(config["width"])
+            if isinstance(config.get("exclusive"), bool):
+                settings["exclusive"] = config["exclusive"]
+            return settings
+
+    return settings
+
+
+def panel_info(layers, output_name):
+    """判断指定输出上面板独占的屏幕边缘及其独占尺寸。
+    参数 layers: niri layer-shell 表面列表; output_name: 输出名称
+    返回: (edge, size) 元组，edge 为 "top"/"bottom"/"left"/"right" 或 None（无面板），
+        size 为面板独占像素数，未知时为 None"""
+    # 1. 环境变量可强制覆盖面板边缘与尺寸
+    override = os.environ.get("MARK_SHOT_NIRI_PANEL_EDGE", "").strip().lower()
+    size_override = env_int("MARK_SHOT_NIRI_PANEL_SIZE")
+    if override in ("top", "bottom", "left", "right", "none"):
+        if override == "none":
+            return None, 0.0
+        return override, float(size_override) if size_override is not None else None
+
+    # 2. 在该输出的 layer 表面中寻找 waybar
+    for layer in layers:
+        if not isinstance(layer, dict):
+            continue
+        if output_name and layer.get("output") != output_name:
+            continue
+        if layer.get("namespace") == "waybar":
+            settings = waybar_settings()
+            if not settings["exclusive"]:
+                return None, 0.0
+            edge = settings["position"]
+            size = settings["height"] if edge in ("top", "bottom") else settings["width"]
+            return edge, size
+    return None, 0.0
+
+
+def niri_config_path():
+    """获取 niri 主配置文件路径。
+    返回: 配置文件绝对路径字符串，优先使用 NIRI_CONFIG 环境变量"""
+    override = os.environ.get("NIRI_CONFIG", "").strip()
+    if override:
+        return override
+    return os.path.join(config_home(), "niri", "config.kdl")
+
+
+def read_kdl_with_includes(path, seen=None):
+    """读取 KDL 配置文本并递归展开 include 指令。
+    参数 path: KDL 文件路径; seen: 已读取文件的真实路径集合，用于防止循环引用
+    返回: 去除注释、展开 include 后拼接的配置文本"""
+    if seen is None:
+        seen = set()
+    real = os.path.realpath(path)
+    if real in seen:
+        return ""
+    seen.add(real)
+    try:
+        with open(real, "r", encoding="utf-8") as file:
+            text = strip_json_comments(file.read())
+    except OSError:
+        return ""
+
+    parts = []
+    base = os.path.dirname(real)
+    for line in text.splitlines():
+        stripped = line.strip()
+        # 1. include 指令按当前文件目录解析相对路径并递归展开
+        if stripped.startswith("include"):
+            target = stripped[len("include"):].strip().strip('"')
+            if target:
+                if not os.path.isabs(target):
+                    target = os.path.join(base, target)
+                parts.append(read_kdl_with_includes(target, seen))
+            continue
+        parts.append(line)
+    return "\n".join(parts)
+
+
+def parse_kdl_number(token):
+    """解析 KDL 数值字面量。
+    参数 token: 字符串形式的数值
+    返回: float 数值，解析失败时返回 None"""
+    try:
+        return float(token)
+    except ValueError:
+        return None
+
+
+def niri_layout_config():
+    """解析 niri 配置中影响平铺几何的 layout 参数。
+    返回: 字典 {gaps, strut_left, strut_right, strut_top, strut_bottom}，
+        缺失项使用 niri 默认值（gaps 16，struts 0）"""
+    config = {
+        "gaps": 16.0,
+        "strut_left": 0.0,
+        "strut_right": 0.0,
+        "strut_top": 0.0,
+        "strut_bottom": 0.0,
+    }
+    text = read_kdl_with_includes(niri_config_path())
+    depth = 0
+    layout_depth = None
+    struts_depth = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        opens = line.count("{")
+        closes = line.count("}")
+        tokens = line.replace("{", " { ").replace("}", " } ").split()
+        name = tokens[0] if tokens else ""
+        # 1. 进入顶层 layout 块
+        if depth == 0 and name == "layout" and opens:
+            layout_depth = depth + 1
+        # 2. 进入 layout 内的 struts 子块
+        elif layout_depth is not None and depth == layout_depth and name == "struts" and opens:
+            struts_depth = depth + 1
+        # 3. 读取 layout 直接子节点 gaps
+        elif layout_depth is not None and depth == layout_depth and name == "gaps" and len(tokens) > 1:
+            value = parse_kdl_number(tokens[1])
+            if value is not None:
+                config["gaps"] = value
+        # 4. 读取 struts 子块中的四边数值（可为负，负值扩大工作区）
+        elif (struts_depth is not None and depth == struts_depth
+                and name in ("left", "right", "top", "bottom") and len(tokens) > 1):
+            value = parse_kdl_number(tokens[1])
+            if value is not None:
+                config["strut_" + name] = value
+        depth += opens - closes
+        if struts_depth is not None and depth < struts_depth:
+            struts_depth = None
+        if layout_depth is not None and depth < layout_depth:
+            layout_depth = None
+    return config
+
+
+def pair(value):
+    if not isinstance(value, list) or len(value) < 2:
+        return None
+    try:
+        return float(value[0]), float(value[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def capture_rect():
+    x = env_int("MARK_SHOT_CAPTURE_X")
+    y = env_int("MARK_SHOT_CAPTURE_Y")
+    width = env_int("MARK_SHOT_CAPTURE_WIDTH")
+    height = env_int("MARK_SHOT_CAPTURE_HEIGHT")
+    if x is None or y is None or width is None or height is None:
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return x, y, width, height
+
+
+def workspace_targets(workspaces):
+    all_outputs = os.environ.get("MARK_SHOT_CAPTURE_ALL_OUTPUTS") == "1"
+    target_output = os.environ.get("MARK_SHOT_CAPTURE_OUTPUT", "")
+    targets = {}
+
+    for workspace in workspaces:
+        if not workspace.get("is_active") and not workspace.get("is_focused"):
+            continue
+        output = workspace.get("output", "")
+        if target_output and not all_outputs and output != target_output:
+            continue
+        workspace_id = workspace.get("id")
+        if workspace_id is not None:
+            targets[workspace_id] = {
+                "output": output,
+                "active_window_id": workspace.get("active_window_id"),
+            }
+
+    return targets
+
+
+def focus_stamp(window):
+    timestamp = window.get("focus_timestamp")
+    if not isinstance(timestamp, dict):
+        return 0, 0
+    return int(timestamp.get("secs", 0)), int(timestamp.get("nanos", 0))
+
+
+def tile_position(layout):
+    pos = pair(layout.get("pos_in_scrolling_layout"))
+    if pos is None:
+        return None
+    return int(round(pos[0])), int(round(pos[1]))
+
+
+def visible_position(layout):
+    return pair(layout.get("tile_pos_in_workspace_view"))
+
+
+def workspace_area_for_window(outputs, layers, layout_config, workspace_outputs, workspace_id, columns):
+    """获取窗口所在工作区的可用区域。
+    参数 outputs: 输出信息字典; layers: layer-shell 列表; layout_config: niri 布局配置;
+        workspace_outputs: 目标工作区信息; workspace_id: 工作区 id; columns: 当前工作区列分组
+    返回: 可用区域矩形，无法推算时返回输出原点和零尺寸"""
+    workspace_info = workspace_outputs.get(workspace_id)
+    if not isinstance(workspace_info, dict):
+        return 0, 0, 0, 0
+    output_name = workspace_info["output"]
+    area = working_area_for_output(outputs, output_name, layers, layout_config, columns)
+    if area is not None:
+        return area
+    origin_x, origin_y = output_origin(outputs, output_name)
+    output_width, output_height = output_size(outputs, output_name)
+    return origin_x, origin_y, output_width, output_height
+
+
+def window_rect(window, outputs, layers, layout_config, workspace_outputs, workspace_columns):
+    """读取 niri 直接上报的窗口矩形。
+    参数 window: niri 窗口对象; outputs: 输出信息字典; layers: layer-shell 列表;
+        layout_config: niri 布局配置; workspace_outputs: 目标工作区信息;
+        workspace_columns: 工作区列分组
+    返回: 全局逻辑坐标矩形，缺少必要字段时返回 None"""
+    workspace_id = window.get("workspace_id")
+    if workspace_id not in workspace_outputs:
+        return None
+
+    layout = window.get("layout")
+    if not isinstance(layout, dict):
+        return None
+
+    tile_pos = pair(layout.get("tile_pos_in_workspace_view"))
+    window_size = pair(layout.get("window_size"))
+    if tile_pos is None or window_size is None:
+        return None
+
+    offset = pair(layout.get("window_offset_in_tile")) or (0.0, 0.0)
+    workspace_info = workspace_outputs.get(workspace_id)
+    output_name = workspace_info["output"]
+    origin_x, origin_y = output_origin(outputs, output_name)
+    # niri's tile_pos_in_workspace_view is already relative to the output's
+    # workspace view. Adding the DMS/strut-adjusted work area would double
+    # apply top/left reserved space for floating windows.
+    x = int(round(origin_x + tile_pos[0] + offset[0]))
+    y = int(round(origin_y + tile_pos[1] + offset[1]))
+    width = int(round(window_size[0]))
+    height = int(round(window_size[1]))
+    if width <= 1 or height <= 1:
+        return None
+
+    return x, y, width, height
+
+
+def default_capture_rect(outputs, workspace_outputs):
+    all_outputs = os.environ.get("MARK_SHOT_CAPTURE_ALL_OUTPUTS") == "1"
+    target_output = os.environ.get("MARK_SHOT_CAPTURE_OUTPUT", "")
+    if all_outputs:
+        names = list(outputs.keys())
+    elif target_output:
+        names = [target_output]
+    else:
+        names = []
+        for workspace_info in workspace_outputs.values():
+            if not isinstance(workspace_info, dict):
+                continue
+            output = workspace_info.get("output", "")
+            if output and output not in names:
+                names.append(output)
+
+    return union_rect(output_rect(outputs, name) for name in names)
+
+
+def tiled_windows(windows, workspace_id):
+    result = []
+    for window in windows:
+        if window.get("workspace_id") != workspace_id:
+            continue
+        if window.get("is_floating"):
+            continue
+        layout = window.get("layout")
+        if not isinstance(layout, dict):
+            continue
+        pos = tile_position(layout)
+        window_size = pair(layout.get("window_size"))
+        tile_size = pair(layout.get("tile_size"))
+        if pos is None or window_size is None or tile_size is None:
+            continue
+        result.append({
+            "window": window,
+            "layout": layout,
+            "column": pos[0],
+            "row": pos[1],
+            "window_size": window_size,
+            "tile_size": tile_size,
+        })
+    return result
+
+
+def workspace_columns(windows, workspace_ids):
+    """按工作区分组平铺窗口列。
+    参数 windows: 全部窗口列表; workspace_ids: 需要处理的工作区 id 集合
+    返回: {workspace_id: {column: [entry, ...]}} 分组结果"""
+    result = {}
+    for workspace_id in workspace_ids:
+        columns = {}
+        for entry in tiled_windows(windows, workspace_id):
+            columns.setdefault(entry["column"], []).append(entry)
+        result[workspace_id] = columns
+    return result
+
+
+def visible_anchor(entries):
+    for entry in entries:
+        pos = visible_position(entry["layout"])
+        if pos is not None:
+            return entry["column"], pos[0]
+    return None
+
+
+def active_column(entries, workspace_info):
+    active_window_id = workspace_info.get("active_window_id")
+    for entry in entries:
+        if entry["window"].get("id") == active_window_id:
+            return entry["column"]
+
+    focused = [entry for entry in entries if entry["window"].get("is_focused")]
+    if focused:
+        return focused[0]["column"]
+
+    latest = max(entries, key=lambda entry: focus_stamp(entry["window"]))
+    return latest["column"]
+
+
+def column_extent(column_entries, gaps):
+    """计算一列 tile 的纵向总占用（含列内间隔与上下两侧 gap）。
+    参数 column_entries: 同一列的窗口条目列表; gaps: niri 布局间隙
+    返回: float 总高度"""
+    heights = sum(entry["tile_size"][1] for entry in column_entries)
+    return heights + gaps * (len(column_entries) + 1)
+
+
+def working_area_for_output(outputs, output_name, layers, layout_config, columns):
+    """推算输出上 niri 工作区矩形（全局逻辑坐标）。
+    参数 outputs: 输出信息字典; output_name: 输出名; layers: layer-shell 列表;
+        layout_config: niri 布局配置; columns: 列分组（面板尺寸未知时用最高列反推）
+    返回: (x, y, width, height) 元组，无法推算时返回 None"""
+    origin_x, origin_y = output_origin(outputs, output_name)
+    output_width, output_height = output_size(outputs, output_name)
+    if output_width <= 0 or output_height <= 0:
+        return None
+
+    gaps = layout_config["gaps"]
+    strut_left = layout_config["strut_left"]
+    strut_right = layout_config["strut_right"]
+    strut_top = layout_config["strut_top"]
+    strut_bottom = layout_config["strut_bottom"]
+
+    insets = dms_insets(layers, output_name)
+    if insets is None:
+        edge, panel = panel_info(layers, output_name)
+        # 1. 水平面板尺寸未知时，用最高列的总占用反推面板独占高度
+        if edge in ("top", "bottom") and panel is None and columns:
+            tallest = max(column_extent(entries, gaps) for entries in columns.values())
+            panel = max(0.0, output_height - strut_top - strut_bottom - tallest)
+        if panel is None:
+            panel = 0.0
+        insets = {"top": 0.0, "bottom": 0.0, "left": 0.0, "right": 0.0}
+        if edge in insets:
+            insets[edge] = panel
+
+    # 2. 按面板/DMS 独占区与 struts 收缩输出矩形得到工作区
+    x = origin_x + strut_left + insets["left"]
+    y = origin_y + strut_top + insets["top"]
+    width = output_width - strut_left - strut_right - insets["left"] - insets["right"]
+    height = output_height - strut_top - strut_bottom - insets["top"] - insets["bottom"]
+    if width <= 0 or height <= 0:
+        return None
+    return x, y, width, height
+
+
+def tiled_rects_for_workspace(windows, outputs, layers, layout_config,
+                              workspace_id, workspace_info, skip_ids):
+    """按 niri 滚动布局规则重建工作区内平铺窗口的屏幕矩形。
+    参数 windows: 全部窗口列表; outputs: 输出信息; layers: layer-shell 列表;
+        layout_config: niri 布局配置; workspace_id: 工作区 id;
+        workspace_info: 工作区目标信息; skip_ids: 已有精确坐标、无需重建的窗口 id 集合
+    返回: [(x, y, width, height), ...] 全局逻辑坐标矩形列表"""
+    entries = tiled_windows(windows, workspace_id)
+    if not entries:
+        return []
+
+    output_name = workspace_info["output"]
+    origin_x, origin_y = output_origin(outputs, output_name)
+    output_width, output_height = output_size(outputs, output_name)
+    if output_width <= 0 or output_height <= 0:
+        return []
+
+    gaps = layout_config["gaps"]
+
+    columns = {}
+    for entry in entries:
+        columns.setdefault(entry["column"], []).append(entry)
+
+    area = working_area_for_output(outputs, output_name, layers, layout_config, columns)
+    if area is None:
+        return []
+    work_x, work_y, work_width, _work_height = area
+
+    # 1. 计算各列在滚动坐标系中的起点（列宽取列内最大 tile 宽，列间隔为 gaps）
+    column_widths = {
+        column: max(entry["tile_size"][0] for entry in column_entries)
+        for column, column_entries in columns.items()
+    }
+    sorted_columns = sorted(columns)
+    column_starts = {}
+    cursor = 0.0
+    for column in sorted_columns:
+        column_starts[column] = cursor
+        cursor += column_widths[column] + gaps
+
+    # 2. 推断视口位置：优先用 niri 上报的可见坐标锚定，否则假设视口从首列开始并保证活动列完全可见
+    work_x_rel = work_x - origin_x
+    anchor = visible_anchor(entries)
+    if anchor is not None:
+        anchor_column, anchor_x = anchor
+        view_x = column_starts[anchor_column] - anchor_x
+    else:
+        view_x = -(work_x_rel + gaps)
+        active = active_column(entries, workspace_info)
+        if active in column_starts:
+            active_start = column_starts[active]
+            active_end = active_start + column_widths[active]
+            if active_start < view_x + work_x_rel + gaps:
+                view_x = active_start - work_x_rel - gaps
+            elif active_end + gaps > view_x + work_x_rel + work_width:
+                view_x = active_end + gaps - work_x_rel - work_width
+
+    # 3. DMS/niri reserves the top edge before the first tile; the regular gap
+    # is applied between stacked tiles and at the bottom edge.
+    result = []
+    for column, column_entries in columns.items():
+        ordered = sorted(column_entries, key=lambda entry: entry["row"])
+        column_x = origin_x + column_starts[column] - view_x
+        y = work_y
+        for entry in ordered:
+            width = int(round(entry["window_size"][0]))
+            height = int(round(entry["window_size"][1]))
+            tile_width, tile_height = entry["tile_size"]
+            skip = entry["window"].get("id") in skip_ids or width <= 1 or height <= 1
+            # 全屏 tile 直接占满输出矩形，不参与常规堆叠
+            if tile_width >= output_width and tile_height >= output_height:
+                if not skip:
+                    result.append((origin_x, origin_y, width, height))
+                continue
+            offset = pair(entry["layout"].get("window_offset_in_tile")) or (0.0, 0.0)
+            if not skip:
+                result.append((
+                    int(round(column_x + offset[0])),
+                    int(round(y + offset[1])),
+                    width,
+                    height,
+                ))
+            y += tile_height + gaps
+    return result
+
+
+def main():
+    """脚本入口：汇总 niri 各活动工作区的窗口矩形并以 JSON 输出。
+    输出: stdout 打印 {"windows": [{x, y, width, height}, ...]}，坐标为全局逻辑像素"""
+    outputs = niri_json(["outputs"])
+    workspaces = niri_json(["workspaces"])
+    windows = niri_json(["windows"])
+    layers = niri_layers()
+    if (not isinstance(outputs, dict)
+            or not isinstance(workspaces, list)
+            or not isinstance(windows, list)):
+        raise RuntimeError("unexpected niri JSON shape")
+
+    layout_config = niri_layout_config()
+    workspace_outputs = workspace_targets(workspaces)
+    capture = capture_rect()
+    if capture is None:
+        capture = default_capture_rect(outputs, workspace_outputs)
+    result = []
+    seen = set()
+    emitted_ids = set()
+    columns_by_workspace = workspace_columns(windows, workspace_outputs.keys())
+
+    # 1. 优先使用 niri 直接上报的可见坐标（浮动窗口及支持该字段的平铺窗口）
+    for window in windows:
+        rect = window_rect(window, outputs, layers, layout_config, workspace_outputs, columns_by_workspace)
+        if rect is None:
+            continue
+        emitted_ids.add(window.get("id"))
+        append_candidate(result, seen, rect, capture)
+
+    # 2. 其余平铺窗口按滚动布局规则重建矩形
+    for workspace_id, workspace_info in workspace_outputs.items():
+        for rect in tiled_rects_for_workspace(windows, outputs, layers, layout_config,
+                                              workspace_id, workspace_info, emitted_ids):
+            append_candidate(result, seen, rect, capture)
+
+    print(json.dumps({"windows": result}, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)

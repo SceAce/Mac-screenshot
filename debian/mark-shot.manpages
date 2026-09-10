@@ -1,0 +1,9 @@
+debian/mark-shot-code-scan.1
+debian/mark-shot-ocr.1
+debian/mark-shot-translate.1
+debian/mark-shot-upload.1
+debian/mark-shot-window-detection-gnome.1
+debian/mark-shot-window-detection-hyprland.1
+debian/mark-shot-window-detection-kde.1
+debian/mark-shot-window-detection-niri.1
+debian/mark-shot.1

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.jswysnemc.MarkShot</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Mark Shot</name>
+  <summary>Wayland screenshot selection and annotation tool</summary>
+  <summary xml:lang="zh-CN">Wayland 截图选区和标注工具</summary>
+  <description>
+    <p>Mark Shot captures screenshots, annotates image regions, pins floating image stickers, and provides OCR and translation helpers for pinned image text.</p>
+    <p xml:lang="zh-CN">Mark Shot 支持截图选区、图像标注、置顶贴图，以及针对置顶图像文字的 OCR 与翻译辅助功能。</p>
+  </description>
+  <launchable type="desktop-id">io.github.jswysnemc.MarkShot.desktop</launchable>
+  <url type="homepage">https://github.com/jswysnemc/mark-shot</url>
+  <url type="bugtracker">https://github.com/jswysnemc/mark-shot/issues</url>
+  <developer id="io.github.jswysnemc">
+    <name>jswysnemc</name>
+  </developer>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.51" date="2026-09-06" />
+    <release version="0.1.50" date="2026-08-30" />
+    <release version="0.1.49" date="2026-08-23" />
+    <release version="0.1.48" date="2026-08-16" />
+    <release version="0.1.47" date="2026-08-10" />
+    <release version="0.1.46" date="2026-08-10" />
+    <release version="0.1.45" date="2026-08-06" />
+    <release version="0.1.44" date="2026-07-26" />
+    <release version="0.1.43" date="2026-07-26" />
+    <release version="0.1.42" date="2026-07-26" />
+    <release version="0.1.41" date="2026-07-16" />
+    <release version="0.1.40" date="2026-07-16" />
+    <release version="0.1.39" date="2026-07-10" />
+    <release version="0.1.38" date="2026-07-07" />
+    <release version="0.1.37" date="2026-07-05" />
+    <release version="0.1.36" date="2026-07-04" />
+    <release version="0.1.35" date="2026-07-04" />
+    <release version="0.1.34" date="2026-07-04" />
+    <release version="0.1.33" date="2026-07-03" />
+    <release version="0.1.32" date="2026-06-28" />
+    <release version="0.1.22" date="2026-06-07" />
+    <release version="0.1.21" date="2026-06-06" />
+    <release version="0.1.20" date="2026-06-05" />
+  </releases>
+</component>

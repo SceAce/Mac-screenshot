@@ -1,0 +1,125 @@
+name: Debian source package
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  resolute:
+    name: Ubuntu 26.04 Resolute source and binary package
+    runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:26.04
+
+    steps:
+      - name: Install packaging tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            devscripts \
+            equivs \
+            git \
+            lintian
+
+      - name: Check out packaging
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install declared build dependencies
+        run: |
+          mk-build-deps --install --remove \
+            --tool 'apt-get -o Debug::pkgProblemResolver=yes --no-install-recommends -y' \
+            debian/control
+
+      - name: Create source package from the stable upstream tag
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          DEBIAN_VERSION="$(dpkg-parsechangelog -SVersion)"
+          UPSTREAM_VERSION="${DEBIAN_VERSION%%-*}"
+          TAG="v${UPSTREAM_VERSION}"
+          git rev-parse --verify "refs/tags/${TAG}^{}"
+
+          SOURCE_ROOT="$RUNNER_TEMP/mark-shot-${UPSTREAM_VERSION}"
+          ORIG_TAR="$RUNNER_TEMP/mark-shot_${UPSTREAM_VERSION}.orig.tar.gz"
+          git archive --format=tar.gz \
+            --prefix="mark-shot-${UPSTREAM_VERSION}/" \
+            --output="$ORIG_TAR" \
+            "$TAG"
+          mkdir -p "$SOURCE_ROOT"
+          tar -xzf "$ORIG_TAR" --strip-components=1 -C "$SOURCE_ROOT"
+          cp -a debian "$SOURCE_ROOT/"
+
+          (cd "$SOURCE_ROOT" && dpkg-buildpackage -S -us -uc)
+          DSC="$(find "$RUNNER_TEMP" -maxdepth 1 -name "mark-shot_${DEBIAN_VERSION}.dsc" -print -quit)"
+          test -n "$DSC"
+          {
+            echo "debian_version=$DEBIAN_VERSION"
+            echo "dsc=$DSC"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build the binary from the generated source package
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_ROOT="$RUNNER_TEMP/source-build"
+          dpkg-source -x "${{ steps.source.outputs.dsc }}" "$BUILD_ROOT"
+          (cd "$BUILD_ROOT" && dpkg-buildpackage -b -us -uc)
+
+      - name: Run Lintian
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r changes; do
+            lintian --display-info --pedantic --fail-on error "$changes"
+          done < <(find "$RUNNER_TEMP" -maxdepth 1 -name 'mark-shot_*.changes' -print)
+
+      - name: Install and inspect the package
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEB="$(find "$RUNNER_TEMP" -maxdepth 1 -name 'mark-shot_*_*.deb' -print -quit)"
+          test -n "$DEB"
+          apt-get install -y "$DEB" desktop-file-utils
+          apt-get check
+          QT_QPA_PLATFORM=offscreen /usr/bin/mark-shot --version
+          debian/tests/smoke
+          dpkg-deb --contents "$DEB"
+          dpkg-deb --info "$DEB"
+          test "$(stat -c '%a' /usr/bin/mark-shot)" = 755
+          test "$(stat -c '%U:%G' /usr/bin/mark-shot)" = root:root
+
+      - name: Collect package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          find "$RUNNER_TEMP" -maxdepth 1 -type f \
+            \( -name 'mark-shot_*.dsc' \
+               -o -name 'mark-shot_*.tar.*' \
+               -o -name 'mark-shot_*.changes' \
+               -o -name 'mark-shot_*.buildinfo' \
+               -o -name 'mark-shot_*.deb' \) \
+            -exec cp -v {} artifacts/ \;
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mark-shot-${{ steps.source.outputs.debian_version }}-resolute
+          path: artifacts/
+          if-no-files-found: error

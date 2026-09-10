@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Mark Shot Image Editor
+Name[zh_CN]=Mark Shot 图片编辑器
+Comment=Annotate and edit image files with Mark Shot
+Comment[zh_CN]=使用 Mark Shot 标注和编辑图片文件
+Exec=@MARK_SHOT_DESKTOP_EXEC@ %F
+Icon=mark-shot-edit
+Terminal=false
+Categories=Graphics;2DGraphics;RasterGraphics;
+Keywords=image;photo;picture;annotation;markup;screenshot;
+Keywords[zh_CN]=图片;照片;图像;标注;编辑;截图;
+MimeType=image/png;image/jpeg;image/webp;image/gif;image/bmp;image/tiff;image/svg+xml;
+StartupNotify=true
+X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2

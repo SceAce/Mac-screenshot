@@ -1,0 +1,16 @@
+.TH MARK-SHOT-UPLOAD 1 "August 2026" "Mark Shot 0.1.49" "User Commands"
+.SH NAME
+mark-shot-upload \- upload a Mark Shot image
+.SH SYNOPSIS
+.B mark-shot-upload
+.RB [ \-\-format
+.BR json ]
+.I image
+.SH DESCRIPTION
+Uploads an image using the hosting provider selected through the Mark Shot
+upload environment configuration and prints the resulting URL as JSON.
+.SH ENVIRONMENT
+Upload provider, endpoint, authentication, and response fields are configured
+through variables documented in the Mark Shot configuration guide.
+.SH SEE ALSO
+.BR mark-shot (1)

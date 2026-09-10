@@ -1,0 +1,61 @@
+Source: mark-shot
+Section: graphics
+Maintainer: Mark Shot maintainers <snemc@qq.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ cmake (>= 3.20),
+ libavcodec-dev,
+ libavfilter-dev,
+ libavformat-dev,
+ libavutil-dev,
+ libegl-dev,
+ libgles2-mesa-dev,
+ liblayershellqtinterface-dev,
+ libonnxruntime-dev,
+ libpipewire-0.3-dev,
+ libportal-dev,
+ libprotobuf-dev,
+ libpulse-dev,
+ libswresample-dev,
+ libswscale-dev,
+ libwayland-dev,
+ libx11-xcb-dev,
+ libxcb1-dev,
+ libzxing-dev,
+ ninja-build,
+ pkgconf,
+ python3,
+ qt6-base-dev,
+ qt6-base-dev-tools,
+ qt6-wayland-dev,
+Standards-Version: 4.7.3
+Homepage: https://github.com/jswysnemc/mark-shot
+Vcs-Browser: https://github.com/jswysnemc/mark-shot
+Vcs-Git: https://github.com/jswysnemc/mark-shot.git
+
+Package: mark-shot
+Architecture: any
+Depends:
+ python3,
+ qt6-svg-plugins,
+ qt6-wayland,
+ ${misc:Depends},
+ ${shlibs:Depends},
+Recommends:
+ grim,
+ pipewire,
+ wl-clipboard,
+ xclip,
+ xdg-desktop-portal,
+Suggests:
+ gnome-shell,
+ python3-pil,
+ python3-venv,
+ python3-zxing-cpp,
+ tesseract-ocr,
+ tesseract-ocr-eng,
+ tesseract-ocr-spa,
+Description: screenshot selection and annotation tool built with Qt 6
+ Mark Shot captures screenshots, annotates image regions, pins floating image
+ stickers, and provides OCR, code scanning, translation, scrolling capture, and
+ screen recording integrations. It supports both Wayland and X11 desktops.

@@ -1,0 +1,18 @@
+.TH MARK-SHOT-TRANSLATE 1 "August 2026" "Mark Shot 0.1.49" "User Commands"
+.SH NAME
+mark-shot-translate \- translate recognized Mark Shot text
+.SH SYNOPSIS
+.B mark-shot-translate
+.BI \-\-input " json"
+.RB [ \-\-target-language
+.IR language ]
+.RB [ \-\-config
+.IR path ]
+.RB [ \-\-format
+.BR json ]
+.SH DESCRIPTION
+Sends recognized text to the configured OpenAI-compatible translation service
+and prints structured JSON results.
+.SH SEE ALSO
+.BR mark-shot (1),
+.BR mark-shot-ocr (1)

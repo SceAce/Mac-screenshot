@@ -1,0 +1,34 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export PATH = /usr/sbin:/usr/bin:/sbin:/bin
+export QT_QPA_PLATFORM = offscreen
+
+%:
+	dh $@ --buildsystem=cmake+ninja
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		-DBUILD_TESTING=ON \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DMARK_SHOT_REQUIRE_FFMPEG=ON \
+		-DMARK_SHOT_REQUIRE_LAYER_SHELL=ON \
+		-DMARK_SHOT_REQUIRE_LIBPORTAL=ON \
+		-DMARK_SHOT_WITH_LAYER_SHELL=ON \
+		-DMARK_SHOT_WITH_LIBPORTAL=ON
+
+override_dh_auto_install:
+	dh_auto_install
+	sed -i '1s|^#!/usr/bin/env python3$$|#!/usr/bin/python3|' \
+		debian/mark-shot/usr/bin/mark-shot-ocr \
+		debian/mark-shot/usr/bin/mark-shot-code-scan \
+		debian/mark-shot/usr/bin/mark-shot-translate \
+		debian/mark-shot/usr/bin/mark-shot-upload \
+		debian/mark-shot/usr/bin/mark-shot-window-detection-niri \
+		debian/mark-shot/usr/bin/mark-shot-window-detection-hyprland \
+		debian/mark-shot/usr/bin/mark-shot-window-detection-gnome \
+		debian/mark-shot/usr/bin/mark-shot-window-detection-kde
+	rm -f debian/mark-shot/usr/share/doc/mark-shot/CHANGELOG.md
+
+override_dh_installchangelogs:
+	dh_installchangelogs CHANGELOG.md

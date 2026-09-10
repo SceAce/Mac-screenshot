@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+
+QT_QPA_PLATFORM=offscreen mark-shot --version
+for desktop in /usr/share/applications/mark-shot.desktop \
+               /usr/share/applications/mark-shot-edit.desktop \
+               /usr/share/applications/net.local.mark-shot.desktop; do
+    desktop-file-validate "$desktop"
+done
+pycache_dir="$(mktemp -d)"
+trap 'rm -rf "$pycache_dir"' EXIT HUP INT TERM
+for helper in /usr/bin/mark-shot-ocr \
+              /usr/bin/mark-shot-code-scan \
+              /usr/bin/mark-shot-translate \
+              /usr/bin/mark-shot-upload \
+              /usr/bin/mark-shot-window-detection-niri \
+              /usr/bin/mark-shot-window-detection-hyprland \
+              /usr/bin/mark-shot-window-detection-gnome \
+              /usr/bin/mark-shot-window-detection-kde; do
+    PYTHONPYCACHEPREFIX="$pycache_dir" python3 -m py_compile "$helper"
+done
+test -f /usr/share/gnome-shell/extensions/mark-shot-scroll-helper@snemc.org/metadata.json
+test -f /usr/lib/mark-shot/libmark-shot-layer-shell.so
+test -f /usr/lib/mark-shot/plugins/libmark-shot-translate-openai.so

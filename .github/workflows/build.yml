@@ -1,0 +1,196 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  linux:
+    name: Linux Qt 6 (x86_64)
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            cmake \
+            ffmpeg \
+            gcc \
+            ninja \
+            pkgconf \
+            pipewire \
+            qt6-base \
+            qt6-wayland \
+            layer-shell-qt
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DMARK_SHOT_REQUIRE_FFMPEG=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+
+      - name: Install into artifact tree
+        run: |
+          cmake --install build --prefix "$PWD/app"
+          tar -C app -czf mark-shot-linux-x86_64.tar.gz .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mark-shot-linux-x86_64
+          path: mark-shot-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  linux-arm64:
+    name: Linux Qt 6 (arm64)
+    runs-on: ubuntu-22.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            libavcodec-dev \
+            libavfilter-dev \
+            libavformat-dev \
+            libgl1-mesa-dev \
+            libavutil-dev \
+            libpipewire-0.3-dev \
+            libswresample-dev \
+            libswscale-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            ninja-build \
+            pkg-config \
+            qt6-base-dev \
+            qt6-base-dev-tools
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DMARK_SHOT_REQUIRE_FFMPEG=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+
+      - name: Install into artifact tree
+        run: |
+          cmake --install build --prefix "$PWD/app"
+          tar -C app -czf mark-shot-linux-arm64.tar.gz .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mark-shot-linux-arm64
+          path: mark-shot-linux-arm64.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Windows Qt 6 (x86_64)
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-cppwinrt
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-onnxruntime
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-tools
+            mingw-w64-ucrt-x86_64-zxing-cpp
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
+            -DMARK_SHOT_REQUIRE_FFMPEG=ON \
+            -DMARK_SHOT_WITH_LAYER_SHELL=OFF \
+            -DMARK_SHOT_WITH_LIBPORTAL=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Install into artifact tree
+        run: |
+          cmake --install build --prefix "$PWD/app"
+          for plugin in ocr-rapid translate-openai translate-tencent translate-baidu translate-youdao code-scan-zxing; do
+            test -f "$PWD/app/lib/mark-shot/plugins/mark-shot-${plugin}.dll" || {
+              echo "Expected provider plugin was not installed: ${plugin}" >&2
+              exit 1
+            }
+          done
+
+      - name: Deploy runtime libraries
+        run: |
+          bash scripts/windows-deploy-runtime.sh "$PWD/app/bin" "$PWD/app/bin/mark-shot.exe"
+
+      - name: Sign Windows binaries
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CODESIGN_CERTIFICATE_BASE64 }}
+          WINDOWS_CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_CERTIFICATE_PASSWORD }}
+          WINDOWS_CODESIGN_TIMESTAMP_URL: ${{ vars.WINDOWS_CODESIGN_TIMESTAMP_URL }}
+        run: |
+          ./scripts/windows-sign-artifact.ps1 -Path "$env:GITHUB_WORKSPACE/app"
+
+      - name: Package artifact
+        run: |
+          tar -C app -czf mark-shot-windows-x86_64.tar.gz .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mark-shot-windows-x86_64
+          path: mark-shot-windows-x86_64.tar.gz
+          if-no-files-found: error

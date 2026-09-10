@@ -1,0 +1,255 @@
+name: Release DEB
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Package version for test runs, for example 0.1.10+test1'
+        required: true
+        type: string
+      checkout_ref:
+        description: 'Optional source ref for manual runs, for example v0.1.27'
+        required: false
+        type: string
+      upload_to_release:
+        description: 'Attach manual-run deb assets to the GitHub Release matching tag'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  deb:
+    name: Build ${{ matrix.target }} ${{ matrix.deb_arch }} package
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Debian 12 baseline for Deepin / older Debian-derived systems.
+          # Keep LayerShell off so Depends stay installable without KF6 packages.
+          - target: debian12
+            deb_arch: amd64
+            runner: ubuntu-22.04
+            image: debian:12
+            compat_check: true
+            asset_suffix: ""
+            layer_shell: "OFF"
+          - target: debian12
+            deb_arch: arm64
+            runner: ubuntu-22.04-arm
+            image: debian:12
+            compat_check: true
+            asset_suffix: ""
+            layer_shell: "OFF"
+          # 【Linux发布】【DEB兼容】Debian 13 使用 FFmpeg 7，必须在本发行版内生成对应 SONAME 依赖
+          - target: debian13
+            deb_arch: amd64
+            runner: ubuntu-22.04
+            image: debian:13
+            compat_check: false
+            asset_suffix: ".debian13"
+            layer_shell: "OFF"
+          - target: debian13
+            deb_arch: arm64
+            runner: ubuntu-22.04-arm
+            image: debian:13
+            compat_check: false
+            asset_suffix: ".debian13"
+            layer_shell: "OFF"
+          # 【Linux发布】【DEB兼容】Ubuntu 24.04 使用 FFmpeg 6 与 t64 Qt，不能复用 Debian 12 包
+          - target: ubuntu2404
+            deb_arch: amd64
+            runner: ubuntu-22.04
+            image: ubuntu:24.04
+            compat_check: false
+            asset_suffix: ".ubuntu24.04"
+            layer_shell: "OFF"
+          - target: ubuntu2404
+            deb_arch: arm64
+            runner: ubuntu-22.04-arm
+            image: ubuntu:24.04
+            compat_check: false
+            asset_suffix: ".ubuntu24.04"
+            layer_shell: "OFF"
+          # Ubuntu 26.04 for modern FFmpeg / t64 Qt (Ubuntu Budgie, labwc, etc.).
+          # Enable LayerShell when the distro package is available.
+          - target: ubuntu2604
+            deb_arch: amd64
+            runner: ubuntu-24.04
+            image: ubuntu:26.04
+            compat_check: false
+            asset_suffix: ".ubuntu26.04"
+            layer_shell: "ON"
+          - target: ubuntu2604
+            deb_arch: arm64
+            runner: ubuntu-24.04-arm
+            image: ubuntu:26.04
+            compat_check: false
+            asset_suffix: ".ubuntu26.04"
+            layer_shell: "ON"
+
+    steps:
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag || github.ref_name }}"
+          if [ -z "$TAG" ]; then
+            echo "No package version was provided" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          CHECKOUT_INPUT="${{ inputs.checkout_ref }}"
+          if [ "${{ github.event_name }}" = "release" ] || [ "${{ github.event_name }}" = "push" ]; then
+            CHECKOUT_REF="$TAG"
+          elif [ -n "$CHECKOUT_INPUT" ]; then
+            CHECKOUT_REF="$CHECKOUT_INPUT"
+          else
+            CHECKOUT_REF="${{ github.ref_name }}"
+          fi
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "checkout_ref=$CHECKOUT_REF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            cmake \
+            dpkg-dev \
+            fakeroot \
+            file \
+            git \
+            libavcodec-dev \
+            libavfilter-dev \
+            libavformat-dev \
+            libgl1-mesa-dev \
+            libavutil-dev \
+            libpipewire-0.3-dev \
+            libswresample-dev \
+            libswscale-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            ninja-build \
+            pkg-config \
+            qt6-base-dev \
+            qt6-base-dev-tools \
+            qt6-wayland-dev
+
+          # 1. Ubuntu 目标尝试启用 LayerShellQt（失败则保持关闭，不阻塞打包）
+          if [ "${{ matrix.layer_shell }}" = "ON" ]; then
+            apt-get install -y --no-install-recommends \
+              liblayershellqtinterface6-dev \
+              || apt-get install -y --no-install-recommends layer-shell-qt-dev \
+              || true
+          fi
+
+          # 2. 可选 provider 插件依赖：有则编入，无则跳过
+          apt-get install -y --no-install-recommends libprotobuf-dev || true
+          apt-get install -y --no-install-recommends libonnxruntime-dev || true
+          apt-get install -y --no-install-recommends libzxing-dev \
+            || apt-get install -y --no-install-recommends libzxingcore-dev \
+            || true
+
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.checkout_ref }}
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          LAYER_SHELL="${{ matrix.layer_shell }}"
+          # LayerShell 包不存在时回退 OFF，避免 configure 失败
+          if [ "$LAYER_SHELL" = "ON" ]; then
+            if ! pkg-config --exists LayerShellQt 2>/dev/null \
+              && ! ls /usr/lib/*/cmake/LayerShellQt/LayerShellQtConfig.cmake >/dev/null 2>&1 \
+              && ! ls /usr/lib/cmake/LayerShellQt/LayerShellQtConfig.cmake >/dev/null 2>&1; then
+              echo "LayerShellQt development files not found; disabling layer-shell plugin" >&2
+              LAYER_SHELL=OFF
+            fi
+          fi
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DMARK_SHOT_REQUIRE_FFMPEG=ON \
+            -DMARK_SHOT_WITH_LAYER_SHELL="$LAYER_SHELL"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Build deb package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/build-deb-package.sh
+          ARGS=(
+            --build-dir build
+            --version "${{ steps.version.outputs.version }}"
+            --arch "${{ matrix.deb_arch }}"
+            --target "${{ matrix.target }}"
+            --asset-suffix "${{ matrix.asset_suffix }}"
+          )
+          if [ "${{ matrix.compat_check }}" = "true" ]; then
+            ARGS+=(--compat-check)
+          fi
+          OUTPUT="$(./scripts/build-deb-package.sh "${ARGS[@]}")"
+          echo "$OUTPUT"
+          ASSET="$(printf '%s\n' "$OUTPUT" | sed -n 's/^asset=//p' | tail -n1)"
+          CHECKSUM="$(printf '%s\n' "$OUTPUT" | sed -n 's/^checksum=//p' | tail -n1)"
+          {
+            echo "asset=$ASSET"
+            echo "checksum=$CHECKSUM"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify package installs on target
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get install -y "./${{ steps.package.outputs.asset }}"
+          apt-get check
+          QT_QPA_PLATFORM=offscreen /usr/bin/mark-shot --version
+
+      - name: Upload deb artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mark-shot-deb-${{ steps.version.outputs.version }}-${{ matrix.target }}-${{ matrix.deb_arch }}
+          path: |
+            ${{ steps.package.outputs.asset }}
+            ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
+
+      - name: Upload deb to release
+        if: github.event_name == 'release' || github.event_name == 'push' || inputs.upload_to_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          files: |
+            ${{ steps.package.outputs.asset }}
+            ${{ steps.package.outputs.checksum }}

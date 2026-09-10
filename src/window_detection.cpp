@@ -1,0 +1,686 @@
+#include "window_detection.h"
+
+#include "app_config_defaults.h"
+#include "config_value.h"
+#include "debug_log.h"
+#include "shell_command.h"
+#include "window_detection_session.h"
+
+#include <QDir>
+#include <QElapsedTimer>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
+#include <QJsonValue>
+#include <QMap>
+#include <QProcess>
+#include <QProcessEnvironment>
+#include <QRegularExpression>
+#include <QStandardPaths>
+#include <QStringList>
+
+#include <algorithm>
+#include <optional>
+
+namespace markshot {
+namespace {
+
+#if defined(Q_OS_WIN)
+QString envConfigDir(const QString &name, const QString &relativePath = QStringLiteral("mark-shot"))
+{
+    const QString root = QProcessEnvironment::systemEnvironment().value(name).trimmed();
+    return root.isEmpty() ? QString() : QDir(root).filePath(relativePath);
+}
+#endif
+
+/// @brief Generates a list of candidate directories where the application configuration might reside.
+/// @return A list of directory paths as a QStringList.
+QStringList appConfigDirCandidates()
+{
+    QStringList candidates;
+#if defined(Q_OS_WIN)
+    const QString localAppData = envConfigDir(QStringLiteral("LOCALAPPDATA"));
+    if (!localAppData.isEmpty()) {
+        candidates.append(localAppData);
+    }
+
+    const QString appData = envConfigDir(QStringLiteral("APPDATA"));
+    if (!appData.isEmpty()) {
+        candidates.append(appData);
+    }
+
+    const QString userProfile = envConfigDir(QStringLiteral("USERPROFILE"),
+                                             QStringLiteral("AppData/Local/mark-shot"));
+    if (!userProfile.isEmpty()) {
+        candidates.append(userProfile);
+    }
+#endif
+
+    const QString appConfig = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    if (!appConfig.isEmpty()) {
+        candidates.append(appConfig);
+    }
+
+    const QString genericConfig = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    if (!genericConfig.isEmpty()) {
+        candidates.append(QDir(genericConfig).filePath(QStringLiteral("mark-shot")));
+    }
+
+    candidates.append(QDir::home().filePath(QStringLiteral(".config/mark-shot")));
+    candidates.removeAll(QString());
+    candidates.removeDuplicates();
+    return candidates;
+}
+
+/// @brief Determines the default application configuration directory.
+/// @return The directory path as a QString.
+QString defaultAppConfigDir()
+{
+    const QStringList candidates = appConfigDirCandidates();
+    return candidates.isEmpty()
+        ? QDir::home().filePath(QStringLiteral(".config/mark-shot"))
+        : candidates.first();
+}
+
+/// @brief Searches candidate directories and returns the path to the first existing config file.
+/// @return The path to the existing config file as a QString, or an empty string if not found.
+QString existingAppConfigPath()
+{
+    const QStringList candidates = appConfigDirCandidates();
+    for (const QString &dir : candidates) {
+        const QString path = QDir(dir).filePath(QStringLiteral("config.json"));
+        if (QFileInfo::exists(path)) {
+            return path;
+        }
+    }
+    return {};
+}
+
+/// @brief 返回当前桌面环境对应的内置窗口检测命令。
+/// @return 已支持 Wayland 合成器的脚本名，其他环境返回空字符串。
+QString defaultWindowDetectionCommand()
+{
+#if defined(Q_OS_WIN)
+    return QString();
+#else
+    return window_detection::defaultCommand(
+        window_detection::detectSession(QProcessEnvironment::systemEnvironment()));
+#endif
+}
+
+}  // namespace
+
+QString markShotConfigDir()
+{
+    const QString existingPath = existingAppConfigPath();
+    if (!existingPath.isEmpty()) {
+        return QFileInfo(existingPath).absolutePath();
+    }
+    return defaultAppConfigDir();
+}
+
+QString appConfigPath()
+{
+    const QString existingPath = existingAppConfigPath();
+    if (!existingPath.isEmpty()) {
+        return existingPath;
+    }
+    return QDir(defaultAppConfigDir()).filePath(QStringLiteral("config.json"));
+}
+
+bool ensureAppConfigFile()
+{
+    const QString path = appConfigPath();
+    if (QFileInfo::exists(path)) {
+        return true;
+    }
+
+    QDir dir(QFileInfo(path).absolutePath());
+    if (!dir.exists() && !dir.mkpath(QStringLiteral("."))) {
+        markshot::debugLog("config", "cannot create config dir path=%s", dir.absolutePath().toUtf8().constData());
+        return false;
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::NewOnly)) {
+        markshot::debugLog("config", "cannot create config path=%s", path.toUtf8().constData());
+        return false;
+    }
+
+    const QJsonDocument document(defaultAppConfigRoot(defaultWindowDetectionCommand()));
+    file.write(document.toJson(QJsonDocument::Indented));
+    file.write("\n");
+    markshot::debugLog("config", "created default config path=%s", path.toUtf8().constData());
+    return true;
+}
+
+namespace {
+
+/// @brief Default timeout value in milliseconds for the window detection process.
+constexpr int kDefaultWindowDetectionTimeoutMs = 1000;
+/// @brief Minimum allowed timeout value in milliseconds for window detection.
+constexpr int kMinWindowDetectionTimeoutMs = 100;
+/// @brief Maximum allowed timeout value in milliseconds for window detection.
+/// 与设置面板 spin 上限(30000ms)保持一致,避免面板值与实际生效值不一致。
+constexpr int kMaxWindowDetectionTimeoutMs = 30000;
+/// @brief Backoff for a missing GNOME Shell helper after a failed probe.
+constexpr int kGnomeHelperFailureBackoffMs = 30000;
+
+/// @brief Configuration settings for the external window detection process.
+struct WindowDetectionConfig {
+    /// @brief The shell command or script path used to perform window detection.
+    QString command;
+    /// @brief The working directory to execute the detection script in.
+    QString workingDirectory;
+    /// @brief Custom environment variables to override for the detection process.
+    QMap<QString, QString> environment;
+    /// @brief Maximum time in milliseconds to wait for the detection process to finish.
+    int timeoutMs = kDefaultWindowDetectionTimeoutMs;
+};
+
+/// @brief Holds the process-local backoff state for the bundled GNOME helper.
+struct GnomeHelperFailureBackoff {
+    QElapsedTimer timer;
+    bool active = false;
+};
+
+GnomeHelperFailureBackoff &gnomeHelperFailureBackoff()
+{
+    static GnomeHelperFailureBackoff state;
+    return state;
+}
+
+bool isBundledGnomeHelper(const WindowDetectionConfig &config)
+{
+#if defined(Q_OS_WIN)
+    Q_UNUSED(config)
+    return false;
+#else
+    const window_detection::Session session =
+        window_detection::detectSession(QProcessEnvironment::systemEnvironment());
+    return session.wayland && session.compositor == QStringLiteral("gnome")
+        && config.command == QStringLiteral("mark-shot-window-detection-gnome");
+#endif
+}
+
+bool bundledGnomeHelperBackoffActive(const WindowDetectionConfig &config)
+{
+    if (!isBundledGnomeHelper(config)) {
+        return false;
+    }
+
+    GnomeHelperFailureBackoff &backoff = gnomeHelperFailureBackoff();
+    if (!backoff.active) {
+        return false;
+    }
+    if (backoff.timer.elapsed() < kGnomeHelperFailureBackoffMs) {
+        return true;
+    }
+    backoff.active = false;
+    return false;
+}
+
+void recordBundledGnomeHelperFailure(const WindowDetectionConfig &config)
+{
+    if (!isBundledGnomeHelper(config)) {
+        return;
+    }
+
+    GnomeHelperFailureBackoff &backoff = gnomeHelperFailureBackoff();
+    backoff.active = true;
+    backoff.timer.restart();
+}
+
+/// @brief Expands tilde (~) prefixes in file paths to the user's home directory path.
+/// @param path The input path string.
+/// @return The expanded absolute path.
+QString expandUserPath(const QString &path)
+{
+    if (path == QStringLiteral("~")) {
+        return QDir::homePath();
+    }
+    if (path.startsWith(QStringLiteral("~/"))) {
+        return QDir::home().filePath(path.mid(2));
+    }
+    return path;
+}
+
+/// @brief Attempts to extract an integer value from a JSON object using a list of alternative keys.
+/// @param object The JSON object.
+/// @param keys List of key names to check in order.
+/// @return The integer value if found under any key, std::nullopt otherwise.
+std::optional<int> namedIntValue(const QJsonObject &object, const QStringList &keys)
+{
+    for (const QString &key : keys) {
+        const std::optional<int> value = config::intValue(object.value(key));
+        if (value.has_value()) {
+            return value;
+        }
+    }
+    return std::nullopt;
+}
+
+/// @brief Parses the environment variables and overrides defined in the window detection config.
+/// @param windowDetection The window detection JSON configuration object.
+/// @return A map of environment variable keys to their string values.
+QMap<QString, QString> environmentOverrides(const QJsonObject &windowDetection)
+{
+    QJsonObject environment = config::objectValue(windowDetection, QStringLiteral("env"));
+    const QJsonObject namedEnvironment = config::objectValue(windowDetection, QStringLiteral("environment"));
+    for (auto it = namedEnvironment.constBegin(); it != namedEnvironment.constEnd(); ++it) {
+        environment.insert(it.key(), it.value());
+    }
+
+    QMap<QString, QString> overrides;
+    for (auto it = environment.constBegin(); it != environment.constEnd(); ++it) {
+        const QString key = it.key().trimmed();
+        if (key.isEmpty()) {
+            continue;
+        }
+        if (const std::optional<QString> value = config::environmentStringValue(it.value())) {
+            overrides.insert(key, *value);
+        }
+    }
+    return overrides;
+}
+
+/// @brief Converts a JSON array of 4 integers [x, y, w, h] into a bounding rectangle.
+/// @param array The JSON array containing at least 4 integer coordinates.
+/// @return A QRect if parsed successfully, std::nullopt otherwise.
+std::optional<QRect> rectFromArray(const QJsonArray &array)
+{
+    if (array.size() < 4) {
+        return std::nullopt;
+    }
+
+    const std::optional<int> x = config::intValue(array.at(0));
+    const std::optional<int> y = config::intValue(array.at(1));
+    const std::optional<int> width = config::intValue(array.at(2));
+    const std::optional<int> height = config::intValue(array.at(3));
+    if (!x.has_value() || !y.has_value() || !width.has_value() || !height.has_value()) {
+        return std::nullopt;
+    }
+    return QRect(*x, *y, *width, *height);
+}
+
+/// @brief Parses a geometry string (formatted like "x,y WxH") into a bounding rectangle.
+/// @param geometry The geometry text string.
+/// @return A QRect if parsed successfully, std::nullopt otherwise.
+std::optional<QRect> rectFromGeometryText(const QString &geometry)
+{
+    static const QRegularExpression pattern(
+        QStringLiteral("^\\s*(-?\\d+)\\s*,\\s*(-?\\d+)\\s+(-?\\d+)\\s*x\\s*(-?\\d+)\\s*$"));
+    const QRegularExpressionMatch match = pattern.match(geometry);
+    if (!match.hasMatch()) {
+        return std::nullopt;
+    }
+
+    bool ok = true;
+    const int x = match.captured(1).toInt(&ok);
+    if (!ok) {
+        return std::nullopt;
+    }
+    const int y = match.captured(2).toInt(&ok);
+    if (!ok) {
+        return std::nullopt;
+    }
+    const int width = match.captured(3).toInt(&ok);
+    if (!ok) {
+        return std::nullopt;
+    }
+    const int height = match.captured(4).toInt(&ok);
+    if (!ok) {
+        return std::nullopt;
+    }
+    return QRect(x, y, width, height);
+}
+
+/// @brief Attempts to extract a bounding rectangle from a JSON window object.
+/// @param object The JSON object representing a window's metadata.
+/// @return A QRect if a geometry was successfully extracted, std::nullopt otherwise.
+std::optional<QRect> rectFromWindowObject(const QJsonObject &object)
+{
+    if (object.value(QStringLiteral("geometry")).isString()) {
+        return rectFromGeometryText(object.value(QStringLiteral("geometry")).toString());
+    }
+
+    if (object.value(QStringLiteral("rect")).isArray()) {
+        return rectFromArray(object.value(QStringLiteral("rect")).toArray());
+    }
+
+    if (object.value(QStringLiteral("at")).isArray() && object.value(QStringLiteral("size")).isArray()) {
+        const QJsonArray at = object.value(QStringLiteral("at")).toArray();
+        const QJsonArray size = object.value(QStringLiteral("size")).toArray();
+        if (at.size() >= 2 && size.size() >= 2) {
+            QJsonArray rect;
+            rect.append(at.at(0));
+            rect.append(at.at(1));
+            rect.append(size.at(0));
+            rect.append(size.at(1));
+            return rectFromArray(rect);
+        }
+    }
+
+    const std::optional<int> x = namedIntValue(object, {QStringLiteral("x"), QStringLiteral("left")});
+    const std::optional<int> y = namedIntValue(object, {QStringLiteral("y"), QStringLiteral("top")});
+    const std::optional<int> width = namedIntValue(object, {QStringLiteral("width"), QStringLiteral("w")});
+    const std::optional<int> height = namedIntValue(object, {QStringLiteral("height"), QStringLiteral("h")});
+    if (!x.has_value() || !y.has_value() || !width.has_value() || !height.has_value()) {
+        return std::nullopt;
+    }
+    return QRect(*x, *y, *width, *height);
+}
+
+/// @brief Attempts to extract a WindowInfo from a JSON window object.
+/// @param object The JSON object representing a window's metadata.
+/// @return A WindowInfo if a geometry was successfully extracted, std::nullopt otherwise.
+std::optional<WindowInfo> windowInfoFromWindowObject(const QJsonObject &object)
+{
+    std::optional<QRect> rect = rectFromWindowObject(object);
+    if (!rect.has_value()) {
+        return std::nullopt;
+    }
+
+    WindowInfo info;
+    info.rect = *rect;
+
+    const QJsonValue zOrderValue = object.value(QStringLiteral("zOrder"));
+    if (zOrderValue.isDouble()) {
+        info.zOrder = static_cast<int>(zOrderValue.toDouble());
+    }
+
+    return info;
+}
+
+/// @brief Normalizes a rectangle and appends it to the list of geometries if valid and not a duplicate.
+/// @param rects Pointer to the destination vector of rectangles.
+/// @param rect The rectangle geometry to add.
+void appendValidRect(QVector<QRect> *rects, QRect rect)
+{
+    if (!rects) {
+        return;
+    }
+    rect = rect.normalized();
+    if (rect.width() <= 1 || rect.height() <= 1) {
+        return;
+    }
+    if (!rects->contains(rect)) {
+        rects->append(rect);
+    }
+}
+
+/// @brief Normalizes a WindowInfo and appends it to the list if valid and not a duplicate.
+/// @param infos Pointer to the destination vector of WindowInfo.
+/// @param info The WindowInfo to add.
+void appendValidWindowInfo(QVector<WindowInfo> *infos, WindowInfo info)
+{
+    if (!infos) {
+        return;
+    }
+    info.rect = info.rect.normalized();
+    if (info.rect.width() <= 1 || info.rect.height() <= 1) {
+        return;
+    }
+    for (const WindowInfo &existing : *infos) {
+        if (existing.rect == info.rect) {
+            return;
+        }
+    }
+    infos->append(info);
+}
+
+/// @brief Parses the standard output of the window detection script.
+/// @param output The raw byte array output from the script.
+/// @return A vector of parsed window info with optional z-order.
+QVector<WindowInfo> parseWindowDetectionOutput(const QByteArray &output)
+{
+    QVector<WindowInfo> results;
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(output, &parseError);
+    if (parseError.error != QJsonParseError::NoError) {
+        markshot::debugLog("window-detection",
+                           "script returned invalid JSON offset=%d error=%s",
+                           parseError.offset,
+                           parseError.errorString().toUtf8().constData());
+        return results;
+    }
+
+    QJsonArray windows;
+    if (document.isArray()) {
+        windows = document.array();
+    } else if (document.isObject()) {
+        const QJsonObject root = document.object();
+        if (root.value(QStringLiteral("windows")).isArray()) {
+            windows = root.value(QStringLiteral("windows")).toArray();
+        } else if (root.value(QStringLiteral("windowGeometries")).isArray()) {
+            windows = root.value(QStringLiteral("windowGeometries")).toArray();
+        } else if (const std::optional<WindowInfo> info = windowInfoFromWindowObject(root)) {
+            appendValidWindowInfo(&results, *info);
+            return results;
+        }
+    }
+
+    for (const QJsonValue &value : windows) {
+        std::optional<WindowInfo> info;
+        if (value.isObject()) {
+            info = windowInfoFromWindowObject(value.toObject());
+        } else if (value.isArray()) {
+            std::optional<QRect> rect = rectFromArray(value.toArray());
+            if (rect.has_value()) {
+                info = WindowInfo{*rect, std::nullopt};
+            }
+        } else if (value.isString()) {
+            std::optional<QRect> rect = rectFromGeometryText(value.toString());
+            if (rect.has_value()) {
+                info = WindowInfo{*rect, std::nullopt};
+            }
+        }
+        if (info.has_value()) {
+            appendValidWindowInfo(&results, *info);
+        }
+    }
+
+    return results;
+}
+
+/// @brief Reads and parses the application configuration file root object.
+/// @return The root QJsonObject if read successfully, std::nullopt otherwise.
+std::optional<QJsonObject> readAppConfigRoot()
+{
+    QFile file(appConfigPath());
+    if (!file.exists()) {
+        return std::nullopt;
+    }
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        markshot::debugLog("window-detection",
+                           "cannot read config path=%s",
+                           appConfigPath().toUtf8().constData());
+        return std::nullopt;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        markshot::debugLog("window-detection",
+                           "config parse failed offset=%d error=%s",
+                           parseError.offset,
+                           parseError.errorString().toUtf8().constData());
+        return std::nullopt;
+    }
+
+    return document.object();
+}
+
+/// @brief Checks if window detection is explicitly enabled or disabled in the config.
+/// @param root The root configuration JSON object.
+/// @return True/false if the setting is specified, std::nullopt otherwise.
+std::optional<bool> configuredWindowDetectionEnabled(const QJsonObject &root)
+{
+    const QJsonValue value = root.value(QStringLiteral("windowDetection"));
+    if (const std::optional<bool> enabled = config::boolValue(value)) {
+        return enabled;
+    }
+    if (!value.isObject()) {
+        return std::nullopt;
+    }
+
+    return config::boolValue(value.toObject().value(QStringLiteral("enabled")));
+}
+
+/// @brief 判断已配置的窗口检测命令是否匹配当前桌面环境。
+/// @param command 用户配置中的窗口检测命令。
+/// @return 匹配当前桌面环境时返回 true，否则返回 false。
+///
+/// 行为约定:
+/// - 非 Wayland 会话(如 X11)与 Windows:尊重用户配置,空命令交由平台枚举回退。
+/// - Wayland 会话下内置默认脚本(mark-shot-window-detection-*)仅在面向其他
+///   合成器时自动纠正为当前会话对应的脚本;用户自定义命令(非内置脚本名,
+///   例如带路径的脚本)一律保留,不再被静默覆盖。
+bool commandMatchesEnvironment(const QString &command)
+{
+#if defined(Q_OS_WIN)
+    return true;
+#else
+    const window_detection::Session session =
+        window_detection::detectSession(QProcessEnvironment::systemEnvironment());
+    return window_detection::commandMatchesSession(command, session);
+#endif
+}
+
+/// @brief Reads and parses the window detection configuration from the application settings.
+/// @return A WindowDetectionConfig struct if configured and enabled, std::nullopt otherwise.
+std::optional<WindowDetectionConfig> readWindowDetectionConfig()
+{
+    const std::optional<QJsonObject> root = readAppConfigRoot();
+    if (!root.has_value()) {
+        return std::nullopt;
+    }
+    if (const std::optional<bool> enabled = configuredWindowDetectionEnabled(*root);
+        enabled.has_value() && !*enabled) {
+        return std::nullopt;
+    }
+
+    const QJsonObject windowDetection = config::objectValue(*root, QStringLiteral("windowDetection"));
+    WindowDetectionConfig config;
+    config.command = windowDetection.value(QStringLiteral("command")).toString().trimmed();
+    config.workingDirectory = windowDetection.value(QStringLiteral("workingDirectory")).toString().trimmed();
+    config.environment = environmentOverrides(windowDetection);
+    if (config.workingDirectory.isEmpty()) {
+        config.workingDirectory = windowDetection.value(QStringLiteral("cwd")).toString().trimmed();
+    }
+    if (const std::optional<int> timeoutMs = config::intValue(windowDetection.value(QStringLiteral("timeoutMs")))) {
+        config.timeoutMs = std::clamp(*timeoutMs, kMinWindowDetectionTimeoutMs, kMaxWindowDetectionTimeoutMs);
+    }
+
+    if (!commandMatchesEnvironment(config.command)) {
+        config.command = defaultWindowDetectionCommand();
+    }
+    if (config.command.isEmpty()) {
+        return std::nullopt;
+    }
+    return config;
+}
+
+/// @brief Sets up environment variables passed to the window detection script.
+/// @param captureGeometry The capture area geometry.
+/// @param outputName The display output name.
+/// @param allOutputs True if capturing all outputs.
+/// @param overrides Map of additional environment variables to override.
+/// @return The populated QProcessEnvironment.
+QProcessEnvironment scriptEnvironment(const QRect &captureGeometry,
+                                      const QString &outputName,
+                                      bool allOutputs,
+                                      const QMap<QString, QString> &overrides)
+{
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    environment.insert(QStringLiteral("MARK_SHOT_CONFIG"), appConfigPath());
+    environment.insert(QStringLiteral("MARK_SHOT_CAPTURE_OUTPUT"), outputName);
+    environment.insert(QStringLiteral("MARK_SHOT_CAPTURE_ALL_OUTPUTS"),
+                       allOutputs ? QStringLiteral("1") : QStringLiteral("0"));
+    if (captureGeometry.isValid() && !captureGeometry.isEmpty()) {
+        const QRect geometry = captureGeometry.normalized();
+        environment.insert(QStringLiteral("MARK_SHOT_CAPTURE_X"), QString::number(geometry.x()));
+        environment.insert(QStringLiteral("MARK_SHOT_CAPTURE_Y"), QString::number(geometry.y()));
+        environment.insert(QStringLiteral("MARK_SHOT_CAPTURE_WIDTH"), QString::number(geometry.width()));
+        environment.insert(QStringLiteral("MARK_SHOT_CAPTURE_HEIGHT"), QString::number(geometry.height()));
+    }
+    for (auto it = overrides.constBegin(); it != overrides.constEnd(); ++it) {
+        environment.insert(it.key(), it.value());
+    }
+    return environment;
+}
+
+} // namespace
+
+bool windowDetectionEnabled()
+{
+    const std::optional<QJsonObject> root = readAppConfigRoot();
+    if (!root.has_value()) {
+        return true;
+    }
+    return configuredWindowDetectionEnabled(*root).value_or(true);
+}
+
+/// @brief Collects the window info detected by running the configured external script/command.
+/// @param captureGeometry The current screen or capture area geometry.
+/// @param outputName The name of the preferred display output.
+/// @param allOutputs Flag indicating whether capturing should target all outputs.
+/// @return A vector of detected window info with optional z-order.
+QVector<WindowInfo> collectConfiguredWindowInfos(const QRect &captureGeometry,
+                                                 const QString &outputName,
+                                                 bool allOutputs)
+{
+    const std::optional<WindowDetectionConfig> config = readWindowDetectionConfig();
+    if (!config.has_value()) {
+        return {};
+    }
+    if (bundledGnomeHelperBackoffActive(*config)) {
+        return {};
+    }
+
+    QProcess process;
+    process.setProgram(commandShellProgram());
+    process.setArguments(commandShellArguments(config->command));
+    process.setProcessEnvironment(scriptEnvironment(captureGeometry,
+                                                   outputName,
+                                                   allOutputs,
+                                                   config->environment));
+    if (!config->workingDirectory.isEmpty()) {
+        process.setWorkingDirectory(expandUserPath(config->workingDirectory));
+    }
+    process.start(QIODevice::ReadOnly);
+
+    if (!process.waitForStarted(1000)) {
+        recordBundledGnomeHelperFailure(*config);
+        markshot::debugLog("window-detection", "script did not start");
+        return {};
+    }
+    if (!process.waitForFinished(config->timeoutMs)) {
+        process.kill();
+        process.waitForFinished(1000);
+        recordBundledGnomeHelperFailure(*config);
+        markshot::debugLog("window-detection",
+                           "script timed out timeout_ms=%d",
+                           config->timeoutMs);
+        return {};
+    }
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        const QByteArray stderrText = process.readAllStandardError().trimmed().left(512);
+        recordBundledGnomeHelperFailure(*config);
+        markshot::debugLog("window-detection",
+                           "script failed exit_code=%d stderr=%s",
+                           process.exitCode(),
+                           stderrText.constData());
+        return {};
+    }
+
+    const QVector<WindowInfo> windows = parseWindowDetectionOutput(process.readAllStandardOutput());
+    markshot::debugLog("window-detection", "script returned windows=%d", static_cast<int>(windows.size()));
+    return windows;
+}
+
+} // namespace markshot

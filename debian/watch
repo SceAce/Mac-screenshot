@@ -1,0 +1,5 @@
+Version: 5
+
+Source: https://github.com/jswysnemc/mark-shot/tags
+Matching-Pattern: (?:.*?/)?v?(\d[\d.]*)\.tar\.gz
+Filename-Mangle: s%(?:.*?)?v?(\d[\d.]*)\.tar\.gz%mark-shot-$1.tar.gz%

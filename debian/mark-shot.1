@@ -1,0 +1,58 @@
+.TH MARK-SHOT 1 "August 2026" "Mark Shot 0.1.49" "User Commands"
+.SH NAME
+mark-shot \- capture, select, and annotate screenshots
+.SH SYNOPSIS
+.B mark-shot
+.RI [ options ]
+.RI [ file ]
+.SH DESCRIPTION
+.B mark-shot
+captures displays or regions, opens images for annotation, pins images, and
+provides recording, OCR, code scanning, translation, and upload integrations.
+It supports Wayland and X11 desktops.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Show command-line help.
+.TP
+.BR \-v ", " \-\-version
+Show the program version.
+.TP
+.B \-\-fullscreen
+Annotate the complete captured frame without region selection.
+.TP
+.B \-\-tray
+Keep running in the system tray and register supported global shortcuts.
+.TP
+.BI \-\-pin-image " path"
+Open an image directly as a pinned sticker.
+.TP
+.BI \-\-capture-to " path"
+Capture without opening the interface and write to a file or directory.
+.TP
+.BI \-\-region " x,y,width,height"
+Limit a headless capture to logical screen coordinates.
+.TP
+.BI \-\-display " name"
+Capture a named output. This option may be repeated.
+.TP
+.B \-\-list-displays
+Print the available outputs as JSON.
+.TP
+.B \-\-xdg-window
+Use a regular fullscreen xdg-shell window instead of layer-shell.
+.TP
+.B \-\-debug
+Enable debug logging.
+.SH FILES
+.TP
+.I ~/.config/mark-shot/config.json
+Per-user configuration.
+.TP
+.I ~/.local/share/mark-shot
+Per-user models and provider plugins.
+.SH SEE ALSO
+.BR mark-shot-ocr (1),
+.BR mark-shot-code-scan (1),
+.BR mark-shot-translate (1),
+.BR mark-shot-upload (1)

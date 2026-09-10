@@ -1,0 +1,5 @@
+mark-shot-*.tar.gz
+pkg/
+src/
+*.pkg.tar.zst
+*.pkg.tar.zst.sig

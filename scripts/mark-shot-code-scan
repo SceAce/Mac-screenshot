@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+import argparse
+import importlib.util
+import json
+import os
+import sys
+
+
+def default_venv_python():
+    xdg_data_home = os.environ.get("XDG_DATA_HOME", "").strip()
+    base = xdg_data_home if xdg_data_home else os.path.expanduser("~/.local/share")
+    return os.path.join(base, "mark-shot", "code-scan-venv", "bin", "python")
+
+
+def module_available(name):
+    """判断当前 Python 解释器是否能导入指定模块。
+    参数 name: 模块名称
+    返回: 可导入时返回 True，否则返回 False"""
+    return importlib.util.find_spec(name) is not None
+
+
+def current_python_has_scanner_backend():
+    """判断当前 Python 环境是否已经具备可用扫码后端。
+    返回: 已安装任一支持的扫码后端时返回 True，否则返回 False"""
+    if module_available("zxingcpp"):
+        return True
+    if module_available("PIL") and module_available("pyzbar"):
+        return True
+    return module_available("cv2")
+
+
+def maybe_reexec_venv():
+    """按需切换到用户虚拟环境中的 Python。
+    返回: 当前系统环境已有扫码后端时不切换，避免重复安装依赖"""
+    if os.environ.get("MARK_SHOT_CODE_SCAN_REEXEC") == "1":
+        return
+    if os.environ.get("MARK_SHOT_CODE_SCAN_NO_VENV") == "1":
+        return
+    if os.environ.get("MARK_SHOT_CODE_SCAN_PREFER_VENV") != "1" and current_python_has_scanner_backend():
+        return
+
+    preferred_python = os.environ.get("MARK_SHOT_CODE_SCAN_PYTHON", "").strip() or default_venv_python()
+    if not os.path.exists(preferred_python):
+        return
+    if os.path.abspath(sys.executable) == os.path.abspath(preferred_python):
+        return
+
+    env = os.environ.copy()
+    env["MARK_SHOT_CODE_SCAN_REEXEC"] = "1"
+    os.execve(preferred_python, [preferred_python, __file__, *sys.argv[1:]], env)
+
+
+def as_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def format_name(value):
+    text = as_text(value).strip()
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    return text
+
+
+def read_attr(obj, names):
+    for name in names:
+        if hasattr(obj, name):
+            value = getattr(obj, name)
+            return value() if callable(value) else value
+    return None
+
+
+def point_xy(point):
+    if point is None:
+        return None
+    if isinstance(point, (list, tuple)) and len(point) >= 2:
+        return [float(point[0]), float(point[1])]
+    x = read_attr(point, ("x", "X"))
+    y = read_attr(point, ("y", "Y"))
+    if x is None or y is None:
+        return None
+    return [float(x), float(y)]
+
+
+def points_from_zxing_position(position):
+    points = []
+    for names in (
+        ("top_left", "topLeft"),
+        ("top_right", "topRight"),
+        ("bottom_right", "bottomRight"),
+        ("bottom_left", "bottomLeft"),
+    ):
+        point = point_xy(read_attr(position, names))
+        if point is not None:
+            points.append(point)
+    if points:
+        return points
+    try:
+        for item in position:
+            point = point_xy(item)
+            if point is not None:
+                points.append(point)
+    except TypeError:
+        pass
+    return points
+
+
+def box_from_points(points):
+    if not points:
+        return None
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    left = min(xs)
+    top = min(ys)
+    return [left, top, max(xs) - left, max(ys) - top]
+
+
+def scan_with_zxingcpp(image_path):
+    import zxingcpp
+
+    image = image_path
+    try:
+        from PIL import Image
+
+        image = Image.open(image_path).convert("RGB")
+    except Exception:
+        pass
+
+    try:
+        barcodes = zxingcpp.read_barcodes(image)
+    except TypeError:
+        barcodes = zxingcpp.read_barcodes(image_path)
+
+    results = []
+    for barcode in barcodes:
+        text = as_text(read_attr(barcode, ("text", "content", "bytes"))).strip()
+        if not text:
+            continue
+        points = points_from_zxing_position(read_attr(barcode, ("position", "pos")))
+        result = {
+            "format": format_name(read_attr(barcode, ("format", "symbology"))),
+            "text": text,
+            "points": points,
+        }
+        box = box_from_points(points)
+        if box is not None:
+            result["box"] = box
+        results.append(result)
+    return "zxingcpp", results
+
+
+def scan_with_pyzbar(image_path):
+    from PIL import Image
+    from pyzbar.pyzbar import decode
+
+    results = []
+    for barcode in decode(Image.open(image_path)):
+        text = as_text(barcode.data).strip()
+        if not text:
+            continue
+        points = [[float(point.x), float(point.y)] for point in barcode.polygon]
+        result = {
+            "format": as_text(barcode.type).strip(),
+            "text": text,
+            "points": points,
+        }
+        rect = barcode.rect
+        result["box"] = [float(rect.left), float(rect.top), float(rect.width), float(rect.height)]
+        results.append(result)
+    return "pyzbar", results
+
+
+def scan_with_opencv(image_path):
+    import cv2
+
+    image = cv2.imread(image_path)
+    if image is None:
+        raise RuntimeError("cannot read image")
+
+    detector = cv2.QRCodeDetector()
+    results = []
+    decoded_items = []
+    point_sets = []
+
+    if hasattr(detector, "detectAndDecodeMulti"):
+        ok, decoded_info, points, _ = detector.detectAndDecodeMulti(image)
+        if ok:
+            decoded_items = list(decoded_info)
+            point_sets = [] if points is None else list(points)
+
+    if not decoded_items:
+        text, points, _ = detector.detectAndDecode(image)
+        if text:
+            decoded_items = [text]
+            point_sets = [] if points is None else [points]
+
+    for index, text in enumerate(decoded_items):
+        text = as_text(text).strip()
+        if not text:
+            continue
+        points = []
+        if index < len(point_sets):
+            for point in point_sets[index].reshape(-1, 2):
+                points.append([float(point[0]), float(point[1])])
+        result = {"format": "QRCode", "text": text, "points": points}
+        box = box_from_points(points)
+        if box is not None:
+            result["box"] = box
+        results.append(result)
+    return "opencv", results
+
+
+def scan_image(image_path):
+    errors = []
+    for scanner in (scan_with_zxingcpp, scan_with_pyzbar, scan_with_opencv):
+        try:
+            return scanner(image_path)
+        except Exception as exc:
+            errors.append(f"{scanner.__name__}: {exc}")
+    raise RuntimeError("No supported barcode scanner backend installed. Install zxing-cpp.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Decode QR codes and barcodes from an image.")
+    parser.add_argument("--format", choices=("json",), default="json")
+    parser.add_argument("image")
+    args = parser.parse_args()
+
+    if not os.path.exists(args.image):
+        print(json.dumps({"backend": "", "results": [], "errors": ["image file not found"]}, ensure_ascii=False))
+        return 1
+
+    try:
+        backend, results = scan_image(args.image)
+    except Exception as exc:
+        print(json.dumps({"backend": "", "results": [], "errors": [str(exc)]}, ensure_ascii=False))
+        return 2
+
+    print(json.dumps({"backend": backend, "results": results, "errors": []}, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    maybe_reexec_venv()
+    sys.exit(main())

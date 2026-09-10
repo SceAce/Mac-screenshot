@@ -1,0 +1,160 @@
+name: Release RPM
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag or package version for test runs, for example v0.1.16'
+        required: true
+        type: string
+      checkout_ref:
+        description: 'Optional source ref for manual runs, for example v0.1.16'
+        required: false
+        type: string
+      upload_to_release:
+        description: 'Attach manual-run rpm assets to the GitHub Release matching tag'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  rpm:
+    name: Build Fedora ${{ matrix.rpm_arch }} package
+    runs-on: ${{ matrix.runner }}
+    container: fedora:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rpm_arch: x86_64
+            runner: ubuntu-latest
+          - rpm_arch: aarch64
+            runner: ubuntu-22.04-arm
+
+    steps:
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag || github.ref_name }}"
+          if [ -z "$TAG" ]; then
+            echo "No release tag or package version was provided" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          CHECKOUT_INPUT="${{ inputs.checkout_ref }}"
+          if [ "${{ github.event_name }}" = "release" ] || [ "${{ github.event_name }}" = "push" ]; then
+            CHECKOUT_REF="$TAG"
+          elif [ -n "$CHECKOUT_INPUT" ]; then
+            CHECKOUT_REF="$CHECKOUT_INPUT"
+          else
+            CHECKOUT_REF="${{ github.ref_name }}"
+          fi
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "checkout_ref=$CHECKOUT_REF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.checkout_ref }}
+
+      - name: Install build dependencies
+        run: |
+          dnf -y --setopt=install_weak_deps=False install \
+            cmake \
+            cmake-rpm-macros \
+            ffmpeg-free-devel \
+            gcc-c++ \
+            layer-shell-qt-devel \
+            libX11-devel \
+            libxcb-devel \
+            ninja-build \
+            pipewire-devel \
+            pkgconf-pkg-config \
+            qt6-qtbase-devel \
+            qt6-qtwayland \
+            redhat-rpm-config \
+            rpm-build
+
+      - name: Build rpm package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ steps.version.outputs.version }}"
+          RPM_ARCH="${{ matrix.rpm_arch }}"
+          HOST_ARCH="$(uname -m)"
+          RPM_TOP="$PWD/rpmbuild"
+          SOURCE_ROOT="mark-shot-$VERSION"
+          SOURCE_ARCHIVE="$RPM_TOP/SOURCES/$SOURCE_ROOT.tar.gz"
+          SPEC_FILE="$RPM_TOP/SPECS/mark-shot.spec"
+          ASSET="mark-shot_${VERSION}_fedora_${RPM_ARCH}.rpm"
+
+          if [ "$HOST_ARCH" != "$RPM_ARCH" ]; then
+            echo "Runner architecture $HOST_ARCH does not match package architecture $RPM_ARCH" >&2
+            exit 1
+          fi
+
+          rm -rf "$RPM_TOP"
+          mkdir -p "$RPM_TOP"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
+
+          tar \
+            --exclude='./rpmbuild' \
+            --transform "s|^\.$|$SOURCE_ROOT|;s|^\./|$SOURCE_ROOT/|" \
+            -czf "$SOURCE_ARCHIVE" .
+          cp packaging/rpm/mark-shot.spec "$SPEC_FILE"
+          sed -i -E "s/^Version:.*/Version:        $VERSION/" "$SPEC_FILE"
+
+          rpmbuild -ba \
+            --define "_topdir $RPM_TOP" \
+            "$SPEC_FILE"
+
+          mapfile -t rpms < <(find "$RPM_TOP/RPMS" -type f -name "mark-shot-${VERSION}-*.${RPM_ARCH}.rpm" -print | sort)
+          if [ "${#rpms[@]}" -ne 1 ]; then
+            printf 'Expected one rpm package, found %s\n' "${#rpms[@]}" >&2
+            printf '%s\n' "${rpms[@]}" >&2
+            exit 1
+          fi
+
+          cp "${rpms[0]}" "$ASSET"
+          sha256sum "$ASSET" > "$ASSET.sha256"
+
+          {
+            echo "asset=$ASSET"
+            echo "checksum=$ASSET.sha256"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload rpm artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mark-shot-rpm-${{ steps.version.outputs.version }}-${{ matrix.rpm_arch }}
+          path: |
+            ${{ steps.package.outputs.asset }}
+            ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
+
+      - name: Upload rpm to release
+        if: github.event_name == 'release' || github.event_name == 'push' || inputs.upload_to_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          files: |
+            ${{ steps.package.outputs.asset }}
+            ${{ steps.package.outputs.checksum }}

@@ -1,0 +1,199 @@
+name: Publish source package to a PPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: Official stable upstream tag, for example v0.1.49
+        required: true
+        type: string
+      ppa_revision:
+        description: PPA rebuild number for this upstream release
+        required: true
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: ppa-publish
+  cancel-in-progress: false
+
+jobs:
+  source:
+    name: Sign and upload Resolute source package
+    runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:26.04
+    environment: ppa-production
+
+    steps:
+      - name: Check out packaging
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Validate publication configuration
+        env:
+          PPA_TARGET: ${{ vars.PPA_TARGET }}
+          LAUNCHPAD_GPG_PRIVATE_KEY: ${{ secrets.LAUNCHPAD_GPG_PRIVATE_KEY }}
+        run: |
+          test -n "$PPA_TARGET" || {
+            echo 'Repository variable PPA_TARGET is required (for example ppa:team/name).' >&2
+            exit 1
+          }
+          test -n "$LAUNCHPAD_GPG_PRIVATE_KEY" || {
+            echo 'Repository secret LAUNCHPAD_GPG_PRIVATE_KEY is required.' >&2
+            exit 1
+          }
+
+      - name: Install source package tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl \
+            debhelper \
+            devscripts \
+            dput \
+            gnupg \
+            lintian \
+            python3
+
+      - name: Verify the canonical stable release
+        id: release
+        env:
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          PPA_REVISION: ${{ inputs.ppa_revision }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$UPSTREAM_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Invalid stable tag: $UPSTREAM_TAG" >&2
+            exit 1
+          }
+          [[ "$PPA_REVISION" =~ ^[1-9][0-9]*$ ]] || {
+            echo "PPA revision must be a positive integer" >&2
+            exit 1
+          }
+
+          RELEASE_JSON="$RUNNER_TEMP/release.json"
+          curl --fail --silent --show-error --location \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/jswysnemc/mark-shot/releases/tags/$UPSTREAM_TAG" \
+            --output "$RELEASE_JSON"
+          python3 - "$RELEASE_JSON" "$UPSTREAM_TAG" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as release_file:
+              release = json.load(release_file)
+          expected_tag = sys.argv[2]
+          if release.get("tag_name") != expected_tag:
+              raise SystemExit("GitHub release tag does not match the requested tag")
+          if release.get("draft") or release.get("prerelease"):
+              raise SystemExit("Draft and prerelease uploads are not allowed")
+          PY
+
+          VERSION="${UPSTREAM_TAG#v}"
+          DEBIAN_VERSION="${VERSION}-0ppa${PPA_REVISION}~resolute1"
+          {
+            echo "version=$VERSION"
+            echo "debian_version=$DEBIAN_VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create the source package
+        env:
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          DEBIAN_VERSION: ${{ steps.release.outputs.debian_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ORIG_TAR="$RUNNER_TEMP/mark-shot_${VERSION}.orig.tar.gz"
+          SOURCE_ROOT="$RUNNER_TEMP/mark-shot-${VERSION}"
+          curl --fail --silent --show-error --location \
+            "https://github.com/jswysnemc/mark-shot/archive/refs/tags/${UPSTREAM_TAG}.tar.gz" \
+            --output "$ORIG_TAR"
+          mkdir -p "$SOURCE_ROOT"
+          tar -xzf "$ORIG_TAR" --strip-components=1 -C "$SOURCE_ROOT"
+          cp -a debian "$SOURCE_ROOT/"
+
+          export DEBFULLNAME='Mark Shot community packaging automation'
+          export DEBEMAIL='snemc@qq.com'
+          CURRENT_VERSION="$(dpkg-parsechangelog \
+            --file "$SOURCE_ROOT/debian/changelog" --show-field Version)"
+          if [ "$CURRENT_VERSION" != "$DEBIAN_VERSION" ]; then
+            dch --changelog "$SOURCE_ROOT/debian/changelog" \
+              --distribution resolute \
+              --newversion "$DEBIAN_VERSION" \
+              'Build the official stable upstream release for Ubuntu 26.04 Resolute.'
+          fi
+          (cd "$SOURCE_ROOT" && dpkg-buildpackage -S -sa -us -uc)
+
+          CHANGES="$RUNNER_TEMP/mark-shot_${DEBIAN_VERSION}_source.changes"
+          test -f "$CHANGES"
+          lintian --display-info --pedantic --fail-on error "$CHANGES"
+
+      - name: Sign and verify the source upload
+        env:
+          DEBIAN_VERSION: ${{ steps.release.outputs.debian_version }}
+          LAUNCHPAD_GPG_PRIVATE_KEY: ${{ secrets.LAUNCHPAD_GPG_PRIVATE_KEY }}
+          LAUNCHPAD_GPG_PASSPHRASE: ${{ secrets.LAUNCHPAD_GPG_PASSPHRASE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -m 700 "$GNUPGHOME"
+          printf 'GNUPGHOME=%s\n' "$GNUPGHOME" >> "$GITHUB_ENV"
+          printf '%s' "$LAUNCHPAD_GPG_PRIVATE_KEY" | gpg --batch --import
+          KEY_FINGERPRINT="$(gpg --batch --with-colons --list-secret-keys \
+            | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test -n "$KEY_FINGERPRINT"
+
+          PASSPHRASE_FILE="$RUNNER_TEMP/gpg-passphrase"
+          printf '%s' "$LAUNCHPAD_GPG_PASSPHRASE" > "$PASSPHRASE_FILE"
+          chmod 600 "$PASSPHRASE_FILE"
+          export GPG_PASSPHRASE_FILE="$PASSPHRASE_FILE"
+          cat > "$RUNNER_TEMP/gpg-wrapper" <<'SH'
+          #!/bin/sh
+          exec /usr/bin/gpg --batch --no-tty --pinentry-mode loopback \
+            --passphrase-file "$GPG_PASSPHRASE_FILE" "$@"
+          SH
+          chmod 700 "$RUNNER_TEMP/gpg-wrapper"
+
+          CHANGES="$RUNNER_TEMP/mark-shot_${DEBIAN_VERSION}_source.changes"
+          debsign -k"$KEY_FINGERPRINT" -p"$RUNNER_TEMP/gpg-wrapper" "$CHANGES"
+          gpg --batch --export "$KEY_FINGERPRINT" > "$RUNNER_TEMP/upload-keyring.gpg"
+          dscverify --no-conf --no-default-keyrings \
+            --keyring "$RUNNER_TEMP/upload-keyring.gpg" "$CHANGES"
+
+      - name: Collect signed source artifacts
+        env:
+          DEBIAN_VERSION: ${{ steps.release.outputs.debian_version }}
+        run: |
+          mkdir -p artifacts
+          find "$RUNNER_TEMP" -maxdepth 1 -type f \
+            \( -name "mark-shot_${DEBIAN_VERSION}*" \
+               -o -name 'mark-shot_*.orig.tar.*' \) \
+            -exec cp -v {} artifacts/ \;
+
+      - name: Upload signed source artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mark-shot-${{ steps.release.outputs.debian_version }}-signed-source
+          path: artifacts/
+          if-no-files-found: error
+
+      - name: Upload source package to Launchpad
+        env:
+          DEBIAN_VERSION: ${{ steps.release.outputs.debian_version }}
+          PPA_TARGET: ${{ vars.PPA_TARGET }}
+        run: |
+          dput "$PPA_TARGET" \
+            "$RUNNER_TEMP/mark-shot_${DEBIAN_VERSION}_source.changes"

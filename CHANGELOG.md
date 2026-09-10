@@ -1,0 +1,692 @@
+# Changelog
+
+## 0.1.51 - 2026-09-06
+
+### Features & Enhancements
+
+- **Translation Request Body Extensions**: `translation.extraBody` merges extra JSON fields into the top level of OpenAI-compatible request bodies, for both the built-in translation task and the `translate-openai` plugin. The default is `{}`; omitting it or using an empty object preserves existing requests. `model`, `temperature`, and `messages` are always owned by the application, and a non-object value is reported as a configuration error before a request is sent. See [docs/configuration.md](docs/configuration.md).
+- **Capture Hot-Path Caching**: Scroll capture ticks no longer repeat environment probes. Wayland session and desktop detection, KWin ScreenShot2 availability, the GNOME helper version, and the KWin screenshot setting are cached (mtime-checked for the config file, short TTLs for D-Bus probes), removing per-frame file reads, JSON parsing, and D-Bus round trips.
+- **Faster First Screencast Frame**: The fixed 1500 ms settle sleep before the first screencast frame is replaced by a condition-variable wait with a single 2500 ms deadline, so capture returns as soon as the compositor delivers a frame instead of always paying the full delay.
+- **Negotiated Stream Geometry Cache**: PipeWire stream geometry is computed once at format negotiation and reused by every frame callback, instead of being re-parsed from stream properties on each frame.
+- **Scroll Capture Frame-Rate Cap**: Scroll capture requests a target FPS matching the session interval (about 22 fps at 45 ms), so dense frames are dropped inside PipeWire instead of triggering pointless full-frame readbacks.
+
+### Bug Fixes
+
+- **KDE Window Hover Selection**: Fully occluded windows are filtered out of KDE window detection, so hovering no longer selects a hidden window stacked underneath another one. Window info is also collected after the frame capture starts, giving fresher geometry for the overlay.
+- **DMA-BUF Import Fallback**: A failed EGL DMA-BUF import now sets a process-level broken marker, and the next stream negotiation falls back to shared memory instead of repeating the doomed import per frame.
+
+## 0.1.50 - 2026-08-30
+
+### Features & Enhancements
+
+- **Tencent, Baidu, and Youdao Translation**: OCR translation is no longer limited to OpenAI-compatible endpoints. Three provider plugins ship alongside it — `tencent-tmt` (Tencent Cloud API 3.0, TC3-HMAC-SHA256), `baidu-fanyi` (Baidu general text translation, MD5 signature), and `youdao-nmt` (Youdao text translation, v3 signature). Credentials are entered on the Integrations settings page or read from environment variables, and the provider is selected through `translation.provider` or the Plugins settings page. See [docs/translation-providers.md](docs/translation-providers.md).
+- **Shared Translation Plugin Infrastructure**: Config lookup, synchronous HTTP, language-name normalization, and character-budget batching moved into a shared layer that all four translation plugins use, replacing what would otherwise be four copies of the config path search.
+- **Deterministic Provider Auto-selection**: With four translation plugins installed, the `auto` chain now sorts candidates by a fixed order (`openai-compatible`, `tencent-tmt`, `baidu-fanyi`, `youdao-nmt`) instead of taking whichever plugin the registry happened to load first, so existing configurations keep resolving to the same provider.
+- **Debian and Ubuntu Source Packaging**: Conventional Debian source packaging under `debian/`, an Ubuntu 26.04 Resolute source and binary validation workflow, and an optional Launchpad PPA publication workflow. See [docs/ubuntu-packaging.md](docs/ubuntu-packaging.md).
+
+### Bug Fixes
+
+- **Batch Translation Alignment**: Translation responses whose segment count does not match the request are rejected outright. A vendor-side mismatch surfaces as an error instead of silently shifting translated text between segments.
+- **Qt 6.2 Compatibility**: The Tencent signer used `QTimeZone::UTC`, which requires Qt 6.5 and broke builds against the Qt 6.2 baseline.
+
+## 0.1.49 - 2026-08-23
+
+### Features & Enhancements
+
+- **Selection Loupe**: Region selection can show a magnifier next to the cursor and nudge the pointer with the arrow keys (Shift+arrow moves 10 pixels). The feature is off by default and is enabled from Settings -> Capture -> Selection Loupe or `capture.selectionLoupe.enabled`. On Wayland, if the compositor rejects cursor warping, the system pointer is hidden and a software crosshair is drawn at the logical point; clicks and drags use that point.
+
+### Bug Fixes
+
+- **GNOME Custom Shortcuts**: `gsettings` values are written as quoted GVariant string literals, so commands such as `"/usr/bin/mark-shot" --capture` register instead of failing at the space after the quoted path.
+- **High-refresh Wayland Selection**: Initial region dragging coalesces full-frame repaints and skips loading LayerShellQt on GNOME Wayland, which does not support layer-shell.
+- **GNOME Window Helper Backoff**: A missing or failing bundled GNOME window-detection helper is not probed again for 30 seconds in the same process.
+- **Kvantum Tooltips**: The process-wide `QToolTip` palette and stylesheet follow the application theme so hover labels stay readable on dark Kvantum frames.
+- **Wayland Upload Clipboard**: An uploaded image URL is published through a persistent `wl-copy` owner when available, so the clipboard still holds the URL after Mark Shot exits. A failed copy now reports “Copy failed” instead of a false success toast.
+- **KDE Pinned Always-on-Top**: Pinned sticker windows stay above other windows on Plasma Wayland by loading a session KWin script that sets `keepAbove`. The window remains a normal xdg-toplevel, so dragging and resizing are unchanged.
+
+## 0.1.48 - 2026-08-16
+
+### Features & Enhancements
+
+- **Double Click Action**: Double clicking an empty area inside the selection finishes a capture in one gesture. The action is configurable through `capture.doubleClickAction` and the Capture settings page — copy and close (default), save to the default folder, save as, pin to screen, cancel, or do nothing. Double clicking a text annotation still opens the inline editor.
+- **Selection History**: Every confirmed capture selection is persisted, and comma / period step back and forth through the last ten selections while picking a region. Entries are stored in global logical coordinates and mapped back into the current frame, so they survive multi-monitor layouts and both portal- and grim-backed captures.
+- **Recording UX**: The recording dialog gained audio device selection and a cleaner layout, and grabber teardown is deferred so stopping a recording no longer lags.
+- **Plugin Marketplace**: The in-app marketplace and its GitHub-hosted plugin index shipped together, listing the OCR, translation, and code-scan provider plugins with per-platform SHA-256 checksums.
+- **Marker Shapes**: The marker tool covers more shapes, with pinned-window OCR highlight fixes alongside.
+- **GNOME Hotkey Fallback**: `xdg-desktop-portal-gnome` does not implement the `GlobalShortcuts` interface and X11 key grabbing is unavailable inside a Wayland session, so tray hotkeys could not be registered on GNOME Wayland at all. A last-resort backend now writes them into GNOME's media-keys custom keybindings through gsettings, cleaning up stale entries from crashed sessions and removing only Mark Shot's own bindings when unregistering.
+
+### Bug Fixes
+
+- **KDE Wayland Scroll Capture**: Scroll capture failed immediately on KDE Wayland because every route was exhausted — KWin routing is skipped for screencast requests, the silent screencast start needs portal authorization, the portal screenshot fallback is disabled during live scrolling, and grim is unsupported by KWin. One interactive portal prompt is now allowed as the last resort of the first captured frame to establish a reusable PipeWire session; later ticks reuse it silently and wlroots setups still succeed through grim before any prompt appears.
+- **Auto Translation Overlay**: Auto Translate After OCR finished in the background without ever activating the overlay, so results stayed hidden until a manual Translate click. The overlay also drew theme-palette text on its fixed light background, leaving translations unreadable under the dark theme. The overlay now activates when background translation finishes and paints its text with an explicit dark foreground.
+- **Bare Print Key on X11**: Mint and Cinnamon users commonly bind Print alone, but the X11 backend rejected every no-modifier sequence before `XGrabKey` ran and reported a misleading "already in use" error. Bare Print now registers, and Sys_Req plus all keysym levels are probed when resolving Print keycodes.
+- **Blank Tray Slot**: StatusNotifierItem hosts run out of process and resolve the advertised icon name in their own standard paths only, so the tray slot stayed empty whenever the icon was reachable only through process-private lookup paths such as Nix wrapper `XDG_DATA_DIRS` or a development checkout. The name is now advertised only when the icon file exists in a shared location, and hosts otherwise receive pixmap data.
+- **Marker Tool Name**: Selecting the marker tool highlighted the Ellipse toolbar button because `currentToolName()` reported markers as ellipses. Thanks to @webfrogs for the fix.
+
+## 0.1.47 - 2026-08-10
+
+### Features & Enhancements
+
+- **Headless Capture CLI**: Screenshots can be taken without the interactive overlay, including capturing several displays in one run.
+- **Text Size and Style Control**: The text tool exposes precise font size and style controls, and new annotations default to 20pt.
+
+### Bug Fixes
+
+- **Hover Window Selection**: Hardened window detection when picking a window by hovering, and the Wayland session probe moved into its own module with dedicated tests.
+- **Capture Overlays**: Freezing now covers all screens and keeps overlays out of the taskbar.
+- **Settings Wheel Guard**: Settings controls no longer change values from stray wheel scrolling over the window.
+- **PipeWire Build Guard**: `pipewire_buffer_data_types` compiles without PipeWire headers, with the DMA-BUF avoidance policy kept inside the guards.
+- **AUR Publishing During Maintenance**: Both AUR jobs exited non-zero when `aur.archlinux.org` refused connections during maintenance, marking a release failed even though every package had already been built and uploaded. Those steps now skip with a warning when git reports the maintenance notice, and still fail on real errors such as authentication problems.
+
+## 0.1.46 - 2026-08-10
+
+### Features & Enhancements
+
+- **Scroll Capture Stitching Rework**: The stitcher was split into focused modules — match search, row signatures, fixed-region detection, and an incremental long-image buffer — and the long image is now grown in place instead of being repainted from scratch on every frame. On a 1200x900, 120-frame benchmark, stitching dropped from 46.2 ms to 1.68 ms per frame. Fixed headers and footers are detected from consecutive frames and trimmed so each is kept exactly once, and overlap verification now excludes the fixed bands that are about to be trimmed, which is what previously caused footers to be stitched into the middle of the long image and content to be lost.
+- **X11 Global Shortcuts**: Global shortcuts now have a native X11 backend that grabs keys directly from the X server. The backend is selected by session type, with automatic fallback between the native and portal paths.
+
+### Bug Fixes
+
+- **Blank Tray Icon**: The application shipped only SVG icons, and the Qt SVG image plugin lives in a separate package (`qt6-svg` / `libqt6svg6`) that was never declared as a dependency. Without it, icon-theme lookup returned an unrenderable icon and the tray showed an empty slot. Bitmap icons are now installed in eight sizes and decode through the plugins bundled with Qt Base, the tray prefers a named theme icon so StatusNotifierItem hosts can render it themselves, and every package now declares the Qt SVG runtime.
+- **Global Shortcuts on X11 Desktops**: Registration failed on Cinnamon, Xfce, MATE, and other X11 desktops with "no such interface" because the only backend was the xdg-desktop-portal `GlobalShortcuts` interface, which is a Wayland-oriented API those desktops do not implement. X11 sessions now grab keys natively, including under active NumLock or CapsLock.
+- **Arch Package FFmpeg Dependency**: Arch packages declared a bare `ffmpeg` dependency, so the FFmpeg 9 update — which bumps every soname by one — left the package satisfying its dependency check while failing to load `libavformat.so.62` at startup. Packages now declare versioned soname dependencies, generated from the linked binaries for the prebuilt package, so pacman refuses the install outright when the library generation does not match.
+
+## 0.1.45 - 2026-08-06
+
+### Features & Enhancements
+
+- **Linux Package Guide**: Added dedicated English and Chinese package guides that map Debian, Ubuntu, Fedora, AppImage, and Arch users to the correct artifacts and document the AppImage compatibility baseline.
+
+### Bug Fixes
+
+- **Debian 13 and Ubuntu 24.04 Packages**: Added native AMD64 and ARM64 builds for Debian 13 and Ubuntu 24.04 so each package links against the FFmpeg and Qt shared-library generations available on its target distribution. Every DEB is installed, dependency-checked, and started inside its target container before release upload.
+- **AppImage glibc Compatibility**: Moved AppImage builds from Arch Linux to Debian 12, enforced a maximum `GLIBC_2.36` symbol requirement, and added an Ubuntu 24.04 startup test before release upload.
+- **KDE Startup Notification**: Disabled desktop-entry startup notification so KDE no longer shows the Mark Shot launch cursor and icon while a screenshot is starting.
+
+## 0.1.44 - 2026-07-26
+
+### Bug Fixes
+
+- **Debian and Ubuntu Packages**: The `.deb` workflow failed on every matrix entry because the code scanner assumed the zxing-cpp 3.x interface, while Debian 12 ships 1.4 and Ubuntu 26.04 ships 2.3. The reader parameter class is now aliased by major version and `ZX_USE_UTF8` keeps `text()` returning `std::string` on every release, so both distributions build again with the built-in scanner enabled. The plugin write-barcode test stays disabled below 3.0, which is the only version with a `CreateBarcode` equivalent.
+
+## 0.1.43 - 2026-07-26
+
+### Features & Enhancements
+
+- **Pause and Resume Recording**: Recordings can be paused and resumed from the floating control bar, the tray menu, a global shortcut, or `--pause-recording`. Capture, encoding, and audio all stop together, and the paused span is subtracted from the output timeline so audio stays in sync.
+- **Recording Control Bar and Region Frame**: Region recordings now show a red frame around the captured area plus a compact floating bar with elapsed time, pause, and stop. Both stay outside the recorded area and let clicks pass through everywhere else. Full-screen recordings skip the overlay because it would be captured, leaving the tray and shortcuts in charge.
+- **Hardware Encoders on More GPUs**: Video encoding now considers VAAPI and Quick Sync on Linux and adds AMF and Quick Sync on Windows, instead of only NVENC. Candidates are probed against the codecs FFmpeg actually ships and the device nodes present on the machine, and multi-GPU systems try each render node so cards without encode support are skipped.
+- **Parallel Pixel Conversion**: BGRA to YUV conversion runs across row slices in a persistent thread pool, removing the single-threaded conversion bottleneck from the writer thread.
+- **GIF Per-Frame Palettes**: GIF recording quantizes through libavfilter `palettegen`/`paletteuse` with a per-frame palette instead of the fixed 3-3-2 palette, cutting average channel error on gradients from over 20 to roughly 3.
+- **MKV Container and Quality Presets**: Video recordings can be written as MKV, which stays playable if a recording is interrupted, and a quality preset (balanced, higher quality, smaller file) drives the constant-quality value, encoder preset, and bitrate.
+- **Recording Countdown**: An optional 3 or 5 second countdown runs before capture starts.
+- **Open Folder from Save Notification**: The recording-saved notification offers to reveal the file through the file manager.
+
+### Bug Fixes
+
+- **KDE Recording on NVIDIA**: KWin cannot export usable DMA-BUF buffers on the NVIDIA proprietary driver, which made recording fail immediately on those systems. Single-GPU KDE sessions with that driver now negotiate shared memory automatically, hybrid-GPU machines keep DMA-BUF, `MARK_SHOT_FORCE_DMABUF` overrides the avoidance, and import failures now say how to work around the problem.
+- **Static Screen Duration**: Event-driven capture backends emit no frames while the screen is unchanged, and the catch-up limit compressed those spans in the output. A heartbeat now writes repeat frames during idle periods so the recording duration matches real time.
+- **GIF Capture Backend**: GIF recording was excluded from wlroots screencopy and fell back to full-path polling captures on niri, sway, and other wlroots compositors. It now shares the video capture path, with the writer dropping frames above the target rate.
+- **Odd Frame Sizes**: Odd capture widths and heights are cropped rather than scaled, removing the slight distortion in the encoded video.
+- **Recording Queue Depth**: The pending-frame queue is sized from frame memory and frame rate instead of a fixed one or two frames, so encoding jitter no longer drops frames unnecessarily.
+
+## 0.1.42 - 2026-07-26
+
+### Features & Enhancements
+
+- **Shape Marker Tool**: Added a toolbar shape-marker group with triangle, star, check, cross, diamond/heart/spade/club, plus, ban, and other filled markers. Re-clicking the tool opens a shape palette.
+- **Curve Marker Glyphs**: Spade, club, and ban markers now use cubic curves and rounded strokes instead of hard polygons, improving icon readability.
+- **Dual Debian Packages**: Official `.deb` builds keep separate Debian 12 and Ubuntu 26.04 packages so FFmpeg/Qt shared-library generations remain installable on both baselines.
+- **Plugin Dependency Packaging**: Deb packaging now runs `dpkg-shlibdeps` against the main binary and installed plugin modules, so OCR/zxing/layer-shell shared libraries are declared when present.
+
+### Bug Fixes
+
+- **Wayland Exclusive Zone Overlay**: Restored `exclusive_zone=-1` for layer-shell overlays so niri no longer leaves a live waybar gap above the frozen capture frame.
+- **Invert Rectangle Border**: Removed the outer stroke from invert rectangles so inverted regions no longer show a red frame.
+- **FFmpeg Arm64 Channel Layout**: Added FFmpeg 4.4-compatible channel-layout fallbacks for Ubuntu 22.04 arm64 CI and packaging builders.
+- **Settings About Page**: Moved About out of Advanced into its own navigation page and tightened settings sidebar item spacing/alignment.
+
+## 0.1.41 - 2026-07-16
+
+### Bug Fixes
+
+- **Windows Build Compatibility**: Restricted PipeWire SPA buffer helpers and their dedicated tests to Linux builds, restoring Windows compilation and packaging without changing Linux PipeWire capture behavior.
+
+## 0.1.40 - 2026-07-16
+
+### Features & Enhancements
+
+- **Draggable Editing Toolbars**: Added dedicated drag grips to the annotation and action toolbars so both panels can be repositioned after a region capture.
+- **Default Move Tool**: Changed the default annotation tool from Pen to Move for new installations and users without an explicit tool preference.
+
+### Bug Fixes
+
+- **Runtime Capture Settings**: Read cursor inclusion, freeze scope, and default tool settings for every capture so configuration changes take effect without restarting the tray process.
+- **Annotation Cursor Feedback**: Restored the arrow cursor for the Move tool outside the selection and across toolbars, property panels, color controls, font lists, extension panels, and combo box popups.
+- **Text Annotation Wrapping**: Added layout padding to text backgrounds so annotation text no longer wraps prematurely while editing.
+- **KDE Capture Compatibility**: Improved KWin own-window policy handling and Wayland screenshot behavior for KDE capture sessions.
+- **PipeWire Buffer Handling**: Added explicit PipeWire buffer data-type handling and tests to improve capture compatibility across shared-memory and DMA-BUF frame paths.
+
+## 0.1.39 - 2026-07-10
+
+### Features & Enhancements
+
+- **Standalone Plugin Assets**: Release builds now publish provider plugins as separate checksummed assets for direct marketplace installation.
+- **Packaged Documentation**: Installed packages now include the configuration reference, release notes, plugin documentation, and linked documentation assets.
+
+### Bug Fixes
+
+- **Wayland Multi-Monitor Capture**: Fixed mixed-scale multi-monitor screenshots by capturing Wayland outputs independently, preventing half-screen selection and incorrectly scaled overlays.
+- **Niri DMS Window Geometry**: Added DMS-aware bar, dock, frame, and frame-exclusion calculations so tiled-window selection matches visible window bounds.
+- **Pinned Windows Across Outputs**: Rebound pinned layer-shell windows to the target output during cross-monitor dragging so images remain visible.
+- **Image Frame Default**: Disabled the optional macOS-style export frame by default while retaining the configuration switch.
+- **Capture Window Visibility Setting**: Read `capture.hideOwnWindows` at capture time and applied it consistently across single-screen and multi-screen capture paths.
+- **Number Badge Rotation**: Rotated number annotations around the badge center and aligned hit testing and selection geometry.
+- **Arch Recording Dependency**: Added FFmpeg to Arch source and x86_64 binary package dependencies.
+- **Plugin Release Stability**: Ensured provider plugin libraries are installed and discovered reliably during release asset packaging.
+
+## 0.1.38 - 2026-07-07
+
+### Features & Enhancements
+
+- **Plugin Ecosystem Foundation**: Added provider plugin registration, user-level plugin directories, provider preference configuration, and a Plugins settings page for OCR, translation, and code scanning extensions.
+- **GitHub Plugin Marketplace**: Added the C++/Qt plugin index parser, download, SHA-256 verification, and install flow. The marketplace can be hosted entirely on GitHub Releases without requiring Python.
+- **C++ Rapid OCR Plugin Upgrade**: Rapid OCR now emits word-level tokens, splits Chinese text and punctuation into selectable characters, splits Latin text by whitespace, and reuses existing RapidOCR model directories.
+
+### Bug Fixes
+
+- **Pinned Text Selection**: Fixed half-width highlight backgrounds for full-width Chinese characters and avoided unintended spaces when copying adjacent Chinese OCR tokens.
+
+## 0.1.37 - 2026-07-05
+
+### Features & Enhancements
+
+- **Windows Recording Audio**: Added native WASAPI loopback audio capture for Windows video recording so system audio can be recorded without PulseAudio.
+- **Windows Release Packaging**: Enabled FFmpeg-backed Windows release builds, runtime DLL deployment, and Authenticode signing support for packaged executables and DLLs.
+
+### Bug Fixes
+
+- **Windows Recording Build**: Fixed MinGW WASAPI GUID linking and recording test linkage so Windows CI builds, tests, signs, packages, and uploads release artifacts successfully.
+
+## 0.1.36 - 2026-07-04
+
+### Bug Fixes
+
+- **Older PipeWire Build Compatibility**: Added a CMake capability check for `spa_video_info_raw::flags` so Debian 12 / older PipeWire headers compile while newer headers keep explicit DMA-BUF modifier detection.
+
+## 0.1.35 - 2026-07-04
+
+### Bug Fixes
+
+- **Qt 6.4 DMA-BUF Build Compatibility**: Guarded Qt Wayland native display access so Debian 12 / Qt 6.4 builds can compile while Qt 6.5+ still uses the Wayland EGL display for PipeWire DMA-BUF import.
+
+## 0.1.34 - 2026-07-04
+
+### Features & Enhancements
+
+- **System/Light/Dark Theme Setting**: Added `ui.theme` with `system`, `dark`, and `light` modes. The General settings page now exposes the theme selector, and the settings dialog can follow the desktop color scheme or apply a forced light/dark palette.
+- **PipeWire Recording Backend**: Reworked the recording capture backend order and PipeWire integration so portal screencast capture can use both shared-memory and DMA-BUF frames, with wlroots screencopy and polling fallbacks when PipeWire cannot provide usable frames.
+- **Recording Backend Modularity**: Split recording capture backends and tests into focused modules, keeping PipeWire, wlroots screencopy, and polling capture paths easier to maintain.
+- **Settings Control Styling**: Normalized settings combobox and spinbox sub-controls, including embedded chevron resources, so dropdowns and numeric controls render consistently across widget styles.
+
+### Bug Fixes
+
+- **PipeWire DMA-BUF Import**: Fixed DMA-BUF frame import by using the Qt Wayland EGL display when available, avoiding mismatches between compositor GPU buffers and the default EGL display.
+- **Recording Status Timer**: Aligned the recording UI timer with captured frame timestamps so the overlay duration matches the saved video timeline instead of including portal authorization and capture startup delay.
+- **PipeWire Error Recovery**: Improved first-frame diagnostics and fallback behavior after PipeWire capture errors such as missing formats or non-mappable buffers.
+- **Theme Setting Localization**: Added Simplified Chinese translations for the new interface theme controls.
+
+## 0.1.33 - 2026-07-03
+
+### Features & Enhancements
+
+- **GIF and Video Recording**: Added GIF and MP4 screen recording with stepped frame-rate selection, display or region capture, optional video audio input, and configurable output directories.
+- **Recording Control Surfaces**: Added tray actions to start and stop recordings, live tray recording status, `--recording-status` JSON output, and `--stop-recording` control through the running instance.
+- **Recording-Aware Capture Overlay**: When a recording is already active, a new frozen-frame status card shows the current recording state and offers an `S` shortcut or button to stop recording while keeping normal screenshot selection available.
+- **Recording and Save Notifications**: Added desktop notifications for recording start, recording saved, recording failure, and screenshot save completion.
+- **Recording Dialog Improvements**: The recording dialog now supports switching between GIF and video modes, defaults to the current display, uses localized text, and updates frame-rate, audio, and output path controls when the mode changes.
+- **Storage Settings**: Added settings and config support for video and GIF output directories, defaulting to `Pictures/mark-shot/videos` and `Pictures/mark-shot/gifs`.
+- **Source Organization**: Split notification, recording, IPC, CLI, CMake source lists, and capture-session screen helpers into focused modules.
+
+### Bug Fixes
+
+- **Wayland Capture Placement**: Improved mixed-DPI Wayland capture placement and crop handling so frozen frames align with the compositor-assigned screen geometry.
+- **Text Selection Context Menu**: Fixed right-click handling in editable text areas so context menus no longer clear or lose the current text selection.
+
+## 0.1.32 - 2026-06-28
+
+### Features & Enhancements
+
+- **Startup Shortcut Hint Panel**: Replaced the centered startup hint pill with a PixPin-style vertical shortcut panel that stays near the left edge and moves from bottom-left to top-left when the pointer approaches it.
+- **Input Device Hints**: Added keyboard, mouse, and mouse-wheel glyphs to the startup shortcut panel so each action communicates its input method more clearly.
+- **Window Z-Order Selection**: Improved window detection ordering across GNOME, KDE Plasma, Hyprland, X11, and Windows so selection prefers the visually topmost matching window.
+- **Wayland Fcitx5 Candidate Support**: Adjusted layer-shell cursor-rectangle handling so fcitx5 candidate windows appear correctly under Wayland capture overlays.
+- **Settings Gear Icon Refresh**: Redrew the settings toolbar and General settings navigation icons as clear gear glyphs instead of sun-like radial icons.
+
+### Bug Fixes
+
+- **Tray Mode Compatibility**: Fixed startup behavior when Mark Shot is launched directly into tray mode on environments without an immediately available system tray.
+- **Wayland Text Editor Width**: Prevented the annotation text editor from shrinking unexpectedly on fractional-scale Wayland displays.
+
+## 0.1.31 - 2026-06-24
+
+### Features & Enhancements
+
+- **CLI Image Pinning**: Added a `--pin-image <path>` CLI option that opens an existing local image directly as a pinned sticker window, skipping the capture and selection flow entirely.
+- **Color Picker History**: The startup Color Picker now remembers recently picked colors. History is persisted in `config.json` under `colorPicker.history` as `#RRGGBBAA` strings, capped at 7 entries, and rendered as swatches in the color panel.
+- **Interface Language Setting**: Added a configurable interface language option (`ui.language`) with `system`, `english`, and `chinese` modes, selectable from the General settings page. Supersedes the legacy root-level `language` key.
+- **Desktop-Aware Window Detection**: Mark Shot now detects the current desktop environment at runtime and auto-selects the matching window detection script (GNOME, KDE Plasma, Hyprland, Niri). Other Wayland sessions fall back to the niri script, and X11 sessions use native X11 detection. Mismatched configured commands are corrected in memory without modifying the config file.
+- **GNOME Occluded Window Filtering**: The GNOME Shell scroll helper extension now filters fully occluded windows from detection results.
+- **Prebuilt AUR Package**: Added a `mark-shot-bin` AUR package that installs prebuilt pacman packages downloaded from GitHub Releases, alongside the existing source-based `mark-shot` package.
+
+### Bug Fixes
+
+- **GNOME Adwaita Palette**: Overrode the application palette at the `qApp` level so the dark palette fully replaces the libqgtk3 base palette under GNOME Adwaita, fixing widget- and class-level `setPalette()` being merged away.
+- **Native Window Detection Fallback**: Corrected the native window detection fallback path.
+- **Color History Swatch Rendering**: Fixed rendering of color history swatches in the startup color dialog.
+- **AUR Optional Dependencies**: Added `python-rapidocr`, `python-pillow`, and `python-zxing-cpp` as preferred OCR/code-scan optdepends, and removed `tesseract-data-chi_sim` so users can choose their own tesseract language data.
+
+## 0.1.30 - 2026-06-20
+
+### Features & Enhancements
+
+- **Settings Configuration Dialog**: Introduced a dedicated settings dialog that consolidates every previously file-only option into a single window. Pages cover General, Capture, Annotation, Pinned, Scroll, Shortcuts, Storage, Integrations, and Advanced, each reading from and writing to the same `config.json`-backed store. The dialog ships with extracted design tokens and a custom navigation sidebar with hand-drawn vector icons, so the look stays consistent across pages and screen sizes.
+- **Launch on Startup**: Added cross-platform autostart support behind a new `Launch on Startup` switch on the General settings page. On Linux it writes an XDG `autostart/mark-shot.desktop` entry that starts Mark Shot with `--tray`; on Windows it writes the current user's `Run` registry key. The switch is disabled automatically on platforms where autostart is unavailable, and applying settings syncs the system entry through the new `autostart` module (`src/autostart/`) atomically with `config.json` updates.
+- **Portal Global Shortcut Support**: Added an `xdg-desktop-portal` based `GlobalShortcuts` backend (`src/global_shortcut_portal.cpp`) so global capture hotkeys work on Wayland compositors without X11. The tray controller now wires the portal backend alongside the existing register path, broadening hotkey compatibility across desktops.
+- **Pinned Text Selection Toggle**: The pinned image window now exposes a configurable text-selection toggle. `pinned_window_config` was split out of `shot_window_config` into its own module, letting users control whether OCR text in pinned windows is selectable, with a matching unit test (`tests/pinned_window_config_test.cpp`).
+
+### Bug Fixes
+
+- **Settings Entry During Capture**: Opening settings from the annotation toolbar or the settings shortcut now closes the frozen capture session first and defers the dialog to the next event-loop tick via `openSettingsAfterClosingCapture`. This prevents the settings dialog from fighting the layer-shell capture window and avoids leaving frozen frames on screen.
+- **Navigation Gear Icon**: Redrew the General navigation icon with an alternating-radius 8-tooth outline and a centered bore, replacing the radial-spoke look that read as a sun rather than a gear.
+- **Pinned Window Placement on Wayland**: Extracted layer-shell geometry computation into `pinned_layer_shell_geometry` and taught the resize controller about Wayland-specific constraints, fixing off-screen and multi-monitor placement of pinned windows. Covered by `tests/pinned_layer_shell_geometry_test.cpp` and updated resize-controller tests.
+- **Layer-Shell Window Animations**: Suppressed entry/exit animations on layer-shell windows for pinned, scroll, and capture surfaces so they appear and disappear instantly.
+- **Persisted Annotation Color**: Ensured the persisted default annotation color is applied at startup before UI construction, preventing the color from briefly reverting to the built-in default on launch.
+
+## 0.1.29 - 2026-06-18
+
+### Features & Enhancements
+
+- **Independent Magnifier Frame Resize**: The magnifier annotation now exposes resize handles on both the inner source viewfinder and the outer lens. Rectangle lenses get 8 corner/edge handles per frame; circular lenses get 4. Resizing either frame keeps `magnifierScale` constant by scaling the other frame proportionally, so the loupe ratio is preserved no matter which side the user grabs. The drag/translate logic moves into a dedicated `shot_window_magnifier_drag.cpp` to keep the annotation editing pass small and the resize flow self-contained.
+- **Rectangle Highlight & Invert Styles**: The rectangle tool gains a style selector with three modes:
+  - `Stroke`: existing outlined or filled rectangle with optional rounded corners.
+  - `Highlight`: marker-pen overlay using `CompositionMode_Multiply` with a semi-transparent fill, mirroring the highlighter look but bound to a rectangle.
+  - `Invert`: inverts the RGB pixels covered by the rectangle, with the outline stroke kept as a visual cue.
+  The fill toggle and corner radius slider are hidden when Highlight or Invert is active, since those styles do not consume `filled` or `cornerRadius`.
+- **Persisted Annotation Tool Defaults**: Tool defaults now survive across sessions through a dedicated state file at `~/.config/mark-shot/annotation-state.json`. The persisted snapshot covers active color and opacity, text background color, per-tool widths (pen / shape / number / mosaic block / laser), rectangle fill / corner radius / style, magnifier scale and lens shape, arrow / highlighter / number badge styles, and text font family. Writes go through `QSaveFile` for atomic commits, triggered immediately after every default-changing entry point so a crash never leaves the file half-written. The state is loaded before UI construction so the toolbar reflects the saved defaults from the very first paint.
+
+### Bug Fixes
+
+- **Annotation Width State Consistency**: Unified the standard stroke width used by Pen, Line, Arrow, Laser, Rectangle, and Ellipse tools while keeping Highlighter width, Number size, Text size, and Mosaic granularity independent. Mouse wheel and slider adjustments now flow through the same state update path, selected-object width changes persist correctly, and high-frequency width edits are debounced before writing history or disk state.
+- **Translation Target Language Controls**: Added a target language selector to the OCR result floating panel and the pinned image context menu. The selector now uses a stable custom dropdown affordance, saves `translation.targetLanguage`, and clears stale pinned-window translation overlays when the target language changes.
+
+## 0.1.28 - 2026-06-16
+
+### Features & Enhancements
+
+- **Configurable Clipboard Image Policy**: Added `clipboard.image.mode` with `image/png`, `url`, and `threshold` modes, plus `thresholdM` size control in megabytes. The default now keeps direct `image/png` clipboard data for better paste compatibility.
+- **Shift-Constrained Line Drawing**: Holding `Shift` while drawing Line, Arrow, or straight Highlighter annotations now snaps strokes to horizontal, vertical, or 45-degree directions.
+- **Updated Demo Video**: Replaced the README demo video with the latest GitHub user-attachments asset.
+
+### Bug Fixes
+
+- **Default Config Creation**: Ensured startup creates a default `config.json` when missing and includes clipboard defaults.
+
+## 0.1.27 - 2026-06-11
+
+### Features & Enhancements
+
+- **Multi-point Line/Arrow Skeleton Editing**: Introduced support for adding, dragging, and deleting multiple skeleton (control) points on line and arrow annotations. Paths are smoothed using continuous quadratic Bezier curves, ensuring endpoints precisely target endpoints.
+- **KDE Window Detection Script**: Added bundled `mark-shot-window-detection-kde` helper for KDE Plasma (KWin Wayland), expanding window boundary detection support.
+- **Toolbar Appearance Configuration**: Added `toolbarAppearance` config options to customize the annotation toolbar layout and icon styles.
+- **Shortcut & Interaction Improvements**: Enhanced keyboard and scroll interactions (e.g. using Backspace/Delete to remove selected skeleton points), and refactored input shortcut processing logic.
+
+### Bug Fixes
+
+- **Release Packaging**: Repaired AppImage and RPM release packaging, fixed tag-based AUR package publishing, and included the KDE helper in RPM packages.
+
+## 0.1.26 - 2026-06-10
+
+### Features & Enhancements
+
+- **Custom Save Path & Placeholders**: Introduced flexible screenshot save templates (`save.pathTemplate` and `save.directoryTemplate`), supporting 30+ dynamic placeholders like `{pictures}`, `{datetime}`, and custom formatting like `{datetime:yyyy-MM-dd}` for versatile directory structures and naming schemes.
+- **KDE KWin Screenshot Control Switch**: Added the `capture.wayland.kde.kwinScreenshot.enabled` option to enable or disable using KWin's restricted `org.kde.KWin.ScreenShot2` D-Bus interface, facilitating fallback debug routines.
+- **Document Layout Optimization**: Refactored the user guide to collapse long KDE DBus setup details and application configuration parameters, improving overall readability.
+
+## 0.1.25 - 2026-06-09
+
+### Features & Enhancements
+
+- **Configure Screen Freeze Scope**: 
+  - Introduced screen freeze scope config (`capture.freezeScope` / `captureFreezeScope`) to control which screens are frozen during region selection screenshots in multi-monitor environments.
+  - Supports `all-screens` (default) to capture and freeze all connected outputs or `cursor-screen` to freeze only the display containing the cursor.
+- **Pinned Image Window Architecture Refactor**: 
+  - Extracted the massive inline sticker/pinned window logic from `shot_window_pinned_window.cpp` into a modular directory structure under `src/pinned_window/` (`pinned_image_window.cpp/h`, OCR, translation, selection, geometry, and resize controller modules) for better code readability and maintenance.
+- **Modularized Startup and Capture Initialization**:
+  - Refactored various initialization routines (environment variable override, configuration parsing, default tools, and Qt portal service disabling) out of `main.cpp` into a dedicated `startup_config` module.
+  - Relocated session launch logic to a standalone `capture_session_launcher` module, separating viewport calculation, window instantiation, and screen freezing strategies from the main executable entry.
+
+### Tests
+
+- **Added Unit Tests**:
+  - Added unit tests for capture freeze scope (`tests/capture_freeze_scope_test.cpp`) and pinned resize controller (`tests/pinned_resize_controller_test.cpp`).
+
+## 0.1.24 - 2026-06-09
+
+### Features & Enhancements
+
+- **Wayland Pinned Window Topmost Support (Always on Top)**: 
+  - Implemented custom cross-platform topmost management (`pinned_window_top.cpp`) for pinned image windows.
+  - Added native support for Wayland LayerShell Top protocol role, with dynamic role switching and fallback strategies.
+  - Introduced configurable `"alwaysOnTop"` preference for pinned windows (default `true`) with toggle option in the context menu.
+  - Added delayed scheduling (`schedulePinnedWindowRaise`) to reliably assert topmost status across different Wayland compositors during window mapping.
+- **Windows Graphics Capture (WGC) Backend**:
+  - Added high-performance native Windows Graphics Capture backend (`screen_capture_windows_wgc.cpp`) for smooth, hardware-accelerated screen capturing on Windows 10/11.
+  - Enabled borderless window capture mode to strip shadow margins and window borders for clean screenshot outputs.
+  - Resolved MinGW compatibility and runtime dependency issues for MSYS2/UCRT64 toolchains.
+- **GNOME Shell Extension & Window Detection Refactor**:
+  - Heavy refactoring of the GNOME Shell scroll helper extension (`extension.js`) to improve GNOME Wayland compatibility.
+  - Introduced `mark-shot-window-detection-gnome` helper script for reliable window geometry and boundary detection under GNOME.
+- **Unified Configuration Storage**:
+  - Implemented standard configuration store (`app_config_store.cpp`) for atomic preference updates, improving robustness when reading and writing configuration settings.
+- **Improved Annotation Workflows**:
+  - Added support for multiple number stamp sequences and numbering styles (Arabic, Alphabetic, Roman, Chinese, and Heavenly Stems) with sequence reset button.
+  - Smart automatic repositioning of the text annotation editor based on remaining boundary space to prevent input panels from clipping.
+  - Enabled native input method (IME) support for the text editor and ensured text cursor visibility during long multi-line inputs.
+- **Configurable Debug Logging**:
+  - Added `--debug`, `--no-debug`, and `--debug-log <path>` CLI options for configurable troubleshooting.
+  - Added `debug.enabled` and `debug.logPath` to `config.json` while maintaining backward compatibility with `DEBUG` env vars.
+
+### Bug Fixes
+
+- **Windows Scroll & Capture Artifacts**:
+  - Fixed scroll preview positioning and visibility issues in multi-monitor setups.
+  - Added exclusionary logic in Windows hook routines to filter out scroll preview overlays from capture frames.
+- **Windows Thread Affinity**:
+  - Corrected Windows affinity configuration logic during system API integration.
+- **Wayland Overlay Handling**:
+  - Improved screen overlay placement and coordinate translations under Wayland LayerShell environments.
+
+### CI & Build
+
+- **Windows Build Pipeline**:
+  - Configured CI workflows to provision required C++ WinRT headers, allowing successful automated builds on Windows runner environments.
+
+### Release Artifacts
+
+- `mark-shot-v0.1.24-linux-x86_64.tar.gz`
+- `mark-shot-v0.1.24-linux-arm64.tar.gz`
+- `mark-shot_0.1.24_amd64.deb`
+- `mark-shot_0.1.24_arm64.deb`
+- `mark-shot_0.1.24_fedora_x86_64.rpm`
+- `mark-shot_0.1.24_fedora_aarch64.rpm`
+- `mark-shot-v0.1.24-linux-x86_64.AppImage`
+- `mark-shot-v0.1.24-linux-x86_64.flatpak`
+
+## 0.1.23 - 2026-06-08
+
+### Features & Enhancements
+
+- **Windows Build Support & Tray Integration**: Added support for compiling on Windows (MSYS2/UCRT64) with Qt 6. Implemented system tray icon support, global hotkey registration, native system fonts, and virtual screen geometry calculations for multi-monitor Windows setups.
+- **App Icon & Tray Default Configuration**: Added application icon `mark-shot.ico` and updated default tray settings.
+- **Supporting Documentation & Code Comments**: Added detailed in-code documentation and comments for core modules to make the system architecture clearer.
+
+### Bug Fixes
+
+- **Windows Screen Capture Configuration**: Expose virtual screen geometries on Windows builds and ensure default config creation at startup to avoid runtime launch issues.
+
+### Refactoring
+
+- **Source Code Restructuring**: Split oversized source files (such as `shot_window.cpp` and `screen_capture.cpp`) into cohesive submodules to improve maintainability and testability.
+
+### Release Artifacts
+
+- `mark-shot-v0.1.23-linux-x86_64.tar.gz`
+- `mark-shot-v0.1.23-linux-arm64.tar.gz`
+- `mark-shot_0.1.23_amd64.deb`
+- `mark-shot_0.1.23_arm64.deb`
+- `mark-shot_0.1.23_fedora_x86_64.rpm`
+- `mark-shot_0.1.23_fedora_aarch64.rpm`
+- `mark-shot-v0.1.23-linux-x86_64.AppImage`
+- `mark-shot-v0.1.23-linux-x86_64.flatpak`
+
+## 0.1.22 - 2026-06-07
+
+### Features & Enhancements
+
+- **Annotation Rotation & Curved Arrow**: Added rotation handle to annotation items (rectangles, ellipses, text, etc.) allowing arbitrary angle adjustments. Upgraded arrow annotations to support curvature adjustment via Bezier curve control points.
+- **Highlighter Style & Magnifier Scale**: Added freehand and straight-line drawing modes for highlighters with a selector in the property bar. Added magnifier scale customisation slider (default 2.75) to precisely tweak magnification strength.
+- **Scroll Capture Frame Polish**: Re-engineered X11 window input masks to correctly overlay capture border regions without sacrificing click-through capabilities for nested scrolling.
+- **Scroll Capture Edge Artifact Scrubbing**: Implemented an automated scan-and-repair algorithm (`scrubCaptureFrameArtifacts`) to scrub stray outline pixels and border remnants from final scrolling capture composites.
+- **Scroll Capture Hide Preview option**: Introduced `scrollCapture.hidePreviewDuringCapture` (`hidePreviewWhileCapturing`) to collapse preview panel structures while capturing.
+- **Rebuilt X11 Window Boundary Detection**: Switched X11 window lookup queries to leverage root stacking trackers (`_NET_CLIENT_LIST_STACKING` / `_NET_CLIENT_LIST`), parse window extents (`_NET_FRAME_EXTENTS`), skip obscured frames (`_NET_WM_STATE_HIDDEN` or iconic state), and bypass override-redirect surfaces. Added `windowDetection.enabled` global flag.
+
+### Release Artifacts
+
+- `mark-shot-v0.1.22-linux-x86_64.tar.gz`
+- `mark-shot-v0.1.22-linux-arm64.tar.gz`
+- `mark-shot_0.1.22_amd64.deb`
+- `mark-shot_0.1.22_arm64.deb`
+- `mark-shot_0.1.22_fedora_x86_64.rpm`
+- `mark-shot_0.1.22_fedora_aarch64.rpm`
+- `mark-shot-v0.1.22-linux-x86_64.AppImage`
+- `mark-shot-v0.1.22-linux-x86_64.flatpak`
+
+## 0.1.21 - 2026-06-06
+
+### Features & Enhancements
+
+- **Magnifier Annotation Tool**: Added a magnifier annotation tool supporting independent positioning of the magnification source and the lens. Once placed, users can drag the source circle and lens circle separately to precisely adjust magnification parameters.
+- **Editable OCR Result Window**: Enabled an editable floating result panel by default for main selection OCR. Users can edit, copy, or translate the recognized text within the panel, or drag the panel to move it.
+- **OCR Result Config & Environment Variables**: Integrated config option `ocr.resultPanel` (boolean or object) and environment variables `MARK_SHOT_OCR_RESULT_PANEL` / `MARK_SHOT_OCR_RESULT_WINDOW` to toggle the result panel. Users can disable this option to restore direct clipboard copy behavior.
+
+### Release Artifacts
+
+- `mark-shot-v0.1.21-linux-x86_64.tar.gz`
+- `mark-shot-v0.1.21-linux-arm64.tar.gz`
+- `mark-shot_0.1.21_amd64.deb`
+- `mark-shot_0.1.21_arm64.deb`
+- `mark-shot_0.1.21_fedora_x86_64.rpm`
+- `mark-shot_0.1.21_fedora_aarch64.rpm`
+- `mark-shot-v0.1.21-linux-x86_64.AppImage`
+- `mark-shot-v0.1.21-linux-x86_64.flatpak`
+
+## 0.1.20 - 2026-06-05
+
+### Features & Enhancements
+
+- **Scroll Capture Idle Pause**: Added an idle pause mechanism (1000ms delay) during scrolling capture when preview panel space is constrained. It automatically pauses capture, reveals the progress preview, and changes the action label to "Continue Capture" so the user can easily review the progress.
+- **Scroll Capture Config Support**: Added full configuration integration for scrolling screenshots in the setup window, allowing users to configure scrolling parameters directly via the UI.
+
+### Bug Fixes
+
+- **Physical Pixel Preservation**: Fixed a regression in cropping arithmetic to ensure raw physical pixels are correctly preserved without scaling distortion.
+- **Scroll Capture UI Polish**: Refactored the scrolling preview window and GNOME shell helper extension to remove the manual 'hide' action, simplify the extension D-Bus event handlers, standardise button layouts, and prevent background outline rendering artifacts when preview panels are hidden.
+
+### Release Artifacts
+
+- `mark-shot-v0.1.20-linux-x86_64.tar.gz`
+- `mark-shot-v0.1.20-linux-arm64.tar.gz`
+- `mark-shot_0.1.20_amd64.deb`
+- `mark-shot_0.1.20_arm64.deb`
+- `mark-shot_0.1.20_fedora_x86_64.rpm`
+- `mark-shot_0.1.20_fedora_aarch64.rpm`
+- `mark-shot-v0.1.20-linux-x86_64.AppImage`
+- `mark-shot-v0.1.20-linux-x86_64.flatpak`
+
+## 0.1.19 - 2026-06-05
+
+### Features & Enhancements
+
+- **GNOME Wayland Scrolling Capture**: Added the bundled `mark-shot-scroll-helper@snemc.org` GNOME Shell extension, enabling GNOME Wayland scrolling screenshots through a private D-Bus helper for area capture and native scroll preview controls.
+- **On-Demand Pinned OCR**: Changed pinned windows to run OCR on demand by default, controlled through `pinnedWindow.autoOcr` and `MARK_SHOT_PINNED_AUTO_OCR`.
+- **Pinned Translation Prefetch**: Added `translation.autoAfterOcr` and `MARK_SHOT_TRANSLATION_AUTO_AFTER_OCR` to optionally prefetch translations after pinned-window OCR completes.
+- **Context Menu Text Copy**: Improved "Copy Image Text" so it can trigger OCR automatically when no recognized text is cached yet, then copy the result after OCR finishes.
+
+### Packaging
+
+- **Debian Compatibility Baseline**: Reworked `.deb` release packaging to build on Debian 12 without the optional LayerShellQt plugin, avoiding newer Ubuntu `t64` and GCC runtime dependencies for Debian-derived systems.
+
+### Release Artifacts
+
+- `mark-shot-v0.1.19-linux-x86_64.tar.gz`
+- `mark-shot-v0.1.19-linux-arm64.tar.gz`
+- `mark-shot_0.1.19_amd64.deb`
+- `mark-shot_0.1.19_arm64.deb`
+- `mark-shot_0.1.19_fedora_x86_64.rpm`
+- `mark-shot_0.1.19_fedora_aarch64.rpm`
+- `mark-shot-v0.1.19-linux-x86_64.AppImage`
+
+## 0.1.18 - 2026-06-04
+
+### Features & Enhancements
+
+- **Configurable Shortcuts**: Added full support for customizing tool hotkeys, global action hotkeys, and startup tool hotkeys through `shortcuts` or `hotkeys` configurations, allowing extensive configuration aliases (e.g. `annotation.shortcuts`).
+- **Pinned Window Border**: Added border settings (`borderEnabled`, `borderColor`, `borderWidth`) for pinned sticker windows, customizable via booleans, nested config objects, or direct properties.
+- **Color Picker User Experience**: Tweaked the color picker copy behavior to add a short UI exit delay (180ms) for smoother clipboard transition.
+
+### Bug Fixes
+
+- **OCR Dependency Diagnostics**: Improved OCR error detection to recognize missing Python dependencies (e.g. `rapidocr` or `tesseract` import errors) in stdout/stderr and display friendly missing-backend notifications.
+
+### Release Artifacts
+
+- `mark-shot-v0.1.18-linux-x86_64.tar.gz`
+- `mark-shot-v0.1.18-linux-arm64.tar.gz`
+- `mark-shot_0.1.18_amd64.deb`
+- `mark-shot_0.1.18_arm64.deb`
+- `mark-shot_0.1.18_fedora_x86_64.rpm`
+- `mark-shot_0.1.18_fedora_aarch64.rpm`
+- `mark-shot-v0.1.18-linux-x86_64-layershell.AppImage`
+- `mark-shot-v0.1.18-linux-x86_64-nolayershell.AppImage`
+
+## 0.1.17 - 2026-06-04
+
+### Features & Enhancements
+
+- **Quick Save Shortcut**: Mapped `Ctrl+S` to perform a direct quick save to the default directory (usually `~/Pictures`) without opening the file dialog, sending a desktop notification via D-Bus on completion. Changed the toolbar save button to "Save As".
+- **Application Environment Configuration**: Supported configuring a top-level `env` (or `environment`) block in `config.json` to load variables like `QT_FONT_DPI` prior to `QApplication` creation, preventing environment settings from breaking screenshot geometry.
+- **Improved Ruler Layout and Interaction**: Standardized layout parameters in the measurement ruler and improved its overlap detection algorithm to ensure the metadata box does not obscure the ruler metrics or cursor indicators.
+- **Scroll Live Follow**: Automatically re-enable live-follow mode when new content is appended during scrolling capture, even if the user has manually panned the viewport.
+
+### Bug Fixes
+
+- **Linux Capture Geometry Stabilization**: Relocated and consolidated screenshot crop arithmetic to standalone module `capture_geometry` with dedicated unit tests. Resolved scaling and multi-monitor layout coordinate rounding bugs on Wayland, mapping image-space selections back to logical geometry accurately.
+- **NixOS OCR Directory Access**: Redirected RapidOCR model caching to a writable directory under XDG data home (defaulting to `~/.local/share/mark-shot/models`) with optional override via `MARK_SHOT_OCR_MODEL_DIR`, avoiding crashes on read-only environments like NixOS.
+- **Missing Header Include**: Fixed a compilation error by explicitly including the `<QClipboard>` header.
+
+### Release Artifacts
+
+- `mark-shot-v0.1.17-linux-x86_64.tar.gz`
+- `mark-shot-v0.1.17-linux-arm64.tar.gz`
+- `mark-shot_0.1.17_amd64.deb`
+- `mark-shot_0.1.17_arm64.deb`
+- `mark-shot_0.1.17_fedora_x86_64.rpm`
+- `mark-shot_0.1.17_fedora_aarch64.rpm`
+- `mark-shot-v0.1.17-linux-x86_64-layershell.AppImage`
+- `mark-shot-v0.1.17-linux-x86_64-nolayershell.AppImage`
+
+## 0.1.16 - 2026-06-04
+
+### Features & Enhancements
+
+- **Startup Overlay Tools**: Added a Color Picker (hotkey `C`, supports loupe resizing via scroll wheel and copying HEX/RGB/HSL/HSV/Qt formats) and a Ruler (hotkey `R`, measures coordinates, area, diagonal, and size) available before selecting a capture region.
+- **Multi-Screen Capture Sessions**: Reconfigured capture logic to fully support simultaneous screen capture and multi-window linkage across multiple displays.
+- **Configurable Default Tools & Color**: Supported defining initial annotation tools (`defaultTool`, `fullscreenDefaultTool`) and `defaultColor` in the application configuration, overridable via CLI flags.
+- **Enhanced Niri Window Detection**: Allowed configuring `env` (or `environment`) blocks in the window detection config to pass variables like offsets (`MARK_SHOT_NIRI_OFFSET_*`) and panel edges to the detection script, resolving alignment bounds and filtering tiny windows.
+
+### Release Artifacts
+
+- `mark-shot-v0.1.16-linux-x86_64.tar.gz`
+- `mark-shot-v0.1.16-linux-arm64.tar.gz`
+- `mark-shot_0.1.16_amd64.deb`
+- `mark-shot_0.1.16_arm64.deb`
+- `mark-shot_0.1.16_fedora_x86_64.rpm`
+- `mark-shot_0.1.16_fedora_aarch64.rpm`
+- `mark-shot-v0.1.16-linux-x86_64-layershell.AppImage`
+- `mark-shot-v0.1.16-linux-x86_64-nolayershell.AppImage`
+
+## 0.1.15 - 2026-06-03
+
+### Features & Enhancements
+
+- **Flexible Scrolling Area Adjustment**: Supported dragging edges from the direction controls to dynamically resize the scrolling capture region on the fly.
+- **Interactive Overview Navigation**: Replaced the bottom scrollbar in the preview panel with direct viewport dragging on the mini-map, offering a cleaner and more intuitive navigation experience.
+- **Seamless Live-Follow Scrolling**: Added mouse-wheel navigation within the preview panel, which automatically snaps back to tracking live capture updates once you scroll back to the active edge.
+- **Configurable Window Borders Detection**: Introduced an external script execution mechanism to auto-detect window boundaries on Wayland. Included a default helper for `niri` window manager and supported custom detection scripts for other compositors (e.g., Hyprland, Sway).
+- **Dual-Mode Desktop Builds**: Added dedicated compilation flags and released dual-variant binaries (supporting native Wayland Layer Shell layer and standard XDG window shells separately) to ensure compatibility across diverse desktop environments.
+- **AppImage Formats Support**: Provided portable x86_64 AppImage packages for both `layershell` and `nolayershell` variants, simplifying deployment on modern Linux distributions.
+
+### Bug Fixes
+
+- **Persistent Clipboard Storage**: Resolved clipboard data loss issues after application exit. Images are now kept reliably in the system clipboard via background integration with Wayland (`wl-copy`) and X11 (`xclip`).
+
+### Release Artifacts
+
+- `mark-shot-v0.1.15-linux-x86_64.tar.gz`
+- `mark-shot-v0.1.15-linux-arm64.tar.gz`
+- `mark-shot_0.1.15_amd64.deb`
+- `mark-shot_0.1.15_arm64.deb`
+- `mark-shot-v0.1.15-linux-x86_64-layershell.AppImage`
+- `mark-shot-v0.1.15-linux-x86_64-nolayershell.AppImage`
+
+## 0.1.14 - 2026-06-02
+
+### Highlights
+
+- Improved portal screencast negotiation with optional libportal support before falling back to direct D-Bus portal calls.
+- Normalized portal screenshot and PipeWire screencast crops so scrolling capture uses compositor logical geometry consistently.
+- Added first-frame settle timing and no-layer-shell panel spacing to reduce accidental overlay capture in desktop environments that use regular XDG windows.
+- Synced the application version with the CMake project version so `mark-shot --version` tracks release metadata.
+
+### Scrolling Screenshot Compatibility
+
+Scrolling screenshot support outside `niri` remains a test feature. KDE, GNOME, X11, and other non-`niri` environments are not complete targets yet because portal behavior, compositor timing, window geometry feedback, and scroll event handling vary across desktop stacks.
+
+If scrolling capture fails, run `DEBUG=1 mark-shot`, reproduce the issue, and attach `/tmp/mark-shot-scroll.log` to a GitHub issue. Set `MARK_SHOT_DEBUG_LOG=/path/to/log` to write the debug log elsewhere.
+
+### Release Artifacts
+
+- `mark-shot-v0.1.14-linux-x86_64.tar.gz`
+- `mark-shot-v0.1.14-linux-arm64.tar.gz`
+- `mark-shot_0.1.14_amd64.deb`
+- `mark-shot_0.1.14_arm64.deb`
+
+## 0.1.13 - 2026-06-01
+
+### Fixes
+
+- Fixed scrolling screenshot selection geometry on scaled `niri` outputs by mapping image pixel coordinates back to compositor logical coordinates before starting the scroll capture session.
+
+### Release Artifacts
+
+- `mark-shot-v0.1.13-linux-x86_64.tar.gz`
+- `mark-shot-v0.1.13-linux-arm64.tar.gz`
+- `mark-shot_0.1.13_amd64.deb`
+- `mark-shot_0.1.13_arm64.deb`
+
+## 0.1.12 - 2026-06-01
+
+### Highlights
+
+- Added native scrolling screenshot capture for Wayland sessions using PipeWire screencast, a guided scrolling overlay, and image stitching.
+- Reworked the annotation property panel with compact icon controls and clearer editing actions.
+- Added selectable arrow styles, including the classic fletched style and a KDE/Spectacle-like open arrow style.
+- Improved screenshot capture behavior on GNOME and other portal-based desktops by avoiding duplicate host portal app registration.
+- Added Linux `arm64` release tarballs and Ubuntu/Debian `arm64` `.deb` packages alongside existing `x86_64` and `amd64` artifacts.
+- Improved compatibility with older PipeWire SPA headers used by some distributions.
+
+### Scrolling Screenshot Compatibility
+
+Scrolling screenshot support is experimental. The implementation relies on PipeWire screencast frames, desktop portal behavior, compositor timing, and window geometry heuristics. It is currently tuned for `niri` and similar Wayland setups.
+
+GNOME and KDE may fail to provide the required capture behavior or may return frames that cannot be stitched reliably. Fully adapting this feature to GNOME Shell, KWin, and different portal backends is difficult because each stack exposes different capture permissions, frame timing, window positioning, and scrolling behavior.
+
+If scrolling capture does not work on GNOME or KDE, use the normal screenshot flow or an external long-screenshot tool through Mark Shot extension commands.
+
+### Release Artifacts
+
+- `mark-shot-v0.1.12-linux-x86_64.tar.gz`
+- `mark-shot-v0.1.12-linux-arm64.tar.gz`
+- `mark-shot_0.1.12_amd64.deb`
+- `mark-shot_0.1.12_arm64.deb`
