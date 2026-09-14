@@ -8,6 +8,9 @@
 #include "screen_capture.h"
 #include "window_detection.h"
 #include "windows_integration.h"
+#ifdef Q_OS_MACOS
+#include "platform/macos/macos_capture.h"
+#endif
 
 #include <QApplication>
 #include <QEventLoop>
@@ -86,7 +89,11 @@ ShotWindow *showCapturedWindow(QScreen *screen,
             window->setGeometry(sourceGeometry);
         }
         if (allOutputs) {
+#ifdef Q_OS_MACOS
+            markshot::macos::showCaptureOverlay(window, nullptr);
+#else
             window->show();
+#endif
         } else {
             markshot::windows::showFullScreenOnScreen(window, screen);
         }

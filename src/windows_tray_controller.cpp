@@ -1,4 +1,7 @@
 #include "windows_tray_controller.h"
+#ifdef Q_OS_MACOS
+#include "platform/macos/macos_capture.h"
+#endif
 
 #include "config_value.h"
 #include "debug_log.h"
@@ -401,6 +404,15 @@ bool WindowsTrayController::start()
         startRecordingFromTray();
     });
     m_menu->addAction(MS_TR("Settings"), this, [] { settings::showSettingsDialog(); });
+#ifdef Q_OS_MACOS
+    m_menu->addAction(MS_TR("Screen Recording Permission"), this, [] {
+        if (macos::screenCapturePermissionGranted()) {
+            macos::openScreenCaptureSettings();
+        } else {
+            macos::ensureScreenCapturePermission();
+        }
+    });
+#endif
     m_menu->addSeparator();
     m_recordingStatusAction = m_menu->addAction(MS_TR("Recording: idle"));
     m_recordingStatusAction->setEnabled(false);

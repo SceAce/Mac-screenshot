@@ -1,0 +1,20 @@
+file(MAKE_DIRECTORY "${OUTPUT_DIR}/mark-shot.iconset")
+foreach(size IN ITEMS 16 32 128 256 512)
+    foreach(scale IN ITEMS 1 2)
+        math(EXPR pixels "${size} * ${scale}")
+        if(scale EQUAL 2)
+            set(suffix "@2x")
+        else()
+            set(suffix "")
+        endif()
+        set(source "${SOURCE_DIR}/data/icons/hicolor/${pixels}x${pixels}/apps/mark-shot.png")
+        if(NOT EXISTS "${source}")
+            set(source "${SOURCE_DIR}/data/icons/hicolor/256x256/apps/mark-shot.png")
+        endif()
+        execute_process(COMMAND /usr/bin/sips -z "${pixels}" "${pixels}" "${source}"
+            --out "${OUTPUT_DIR}/mark-shot.iconset/icon_${size}x${size}${suffix}.png"
+            OUTPUT_QUIET COMMAND_ERROR_IS_FATAL ANY)
+    endforeach()
+endforeach()
+execute_process(COMMAND /usr/bin/iconutil -c icns "${OUTPUT_DIR}/mark-shot.iconset"
+    -o "${OUTPUT_DIR}/mark-shot.icns" COMMAND_ERROR_IS_FATAL ANY)

@@ -442,7 +442,10 @@ void ShotWindow::copySelection()
         return;
     }
 
-    markshot::copyImageToClipboard(output);
+    if (!markshot::copyImageToClipboard(output)) {
+        showToast(MS_TR("Copy failed"));
+        return;
+    }
 
     close();
 }

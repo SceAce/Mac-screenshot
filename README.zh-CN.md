@@ -632,6 +632,14 @@ cmake --build build-windows
 
 当前 Windows 支持范围是普通截图与图片标注。滚动截图、合成器专用窗口检测和 Linux 桌面快捷方式在 Windows 上不可用。内置的 Python 辅助脚本（`mark-shot-ocr`、`mark-shot-code-scan`、`mark-shot-translate`）不会自动安装，请参考上方的 [OCR 后端](#ocr-后端可选)、[扫码后端](#扫码后端可选)和翻译章节进行手动配置。
 
+#### macOS（实验性）
+
+macOS 14 及以上现提供 ScreenCaptureKit 基础截图后端、屏幕录制权限引导和本地
+`.app` 打包。首版面向 Apple Silicon，支持截图、标注、复制、保存、贴图和菜单栏入口。
+全局快捷键、登录启动、连续录屏及音频仍需后续适配。
+
+fish 构建命令、打包及授权步骤见 [macOS 开发说明](docs/macos-development.zh-CN.md)。
+
 ### 构建与编译
 
 ```bash

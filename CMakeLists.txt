@@ -1,11 +1,24 @@
 cmake_minimum_required(VERSION 3.20)
 
+if(CMAKE_HOST_APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS version")
+endif()
+
 project(mark-shot VERSION 0.1.51 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+
+if(APPLE)
+    if(CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS "14.0")
+        message(FATAL_ERROR "ScreenCaptureKit screenshots require macOS 14.0 or later")
+    endif()
+    enable_language(OBJCXX)
+    set(CMAKE_OBJCXX_STANDARD 17)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+endif()
 
 include(GNUInstallDirs)
 
@@ -257,6 +270,10 @@ qt_add_executable(mark-shot
 
 include(cmake/capture_session_sources.cmake)
 
+if(APPLE)
+    include(cmake/macos.cmake)
+endif()
+
 target_include_directories(mark-shot PRIVATE src plugin-sdk)
 target_compile_definitions(mark-shot PRIVATE MARK_SHOT_VERSION="${PROJECT_VERSION}")
 if(WIN32)
@@ -289,18 +306,23 @@ else()
     message(STATUS "mark-shot: builtin zxing-cpp code scanner disabled")
 endif()
 
+if(MARK_SHOT_LINUX OR APPLE)
+    target_sources(mark-shot PRIVATE
+        src/shortcuts/global_shortcut_backend.h
+        src/shortcuts/global_shortcut_manager.cpp
+        src/shortcuts/global_shortcut_manager.h
+    )
+endif()
+
 if(MARK_SHOT_LINUX)
     target_sources(mark-shot
         PRIVATE
             src/global_shortcut_portal.cpp
             src/global_shortcut_portal.h
-            src/shortcuts/global_shortcut_backend.h
             src/shortcuts/global_shortcut_gnome.cpp
             src/shortcuts/global_shortcut_gnome.h
             src/shortcuts/global_shortcut_keymap.cpp
             src/shortcuts/global_shortcut_keymap.h
-            src/shortcuts/global_shortcut_manager.cpp
-            src/shortcuts/global_shortcut_manager.h
     )
     target_link_libraries(mark-shot PRIVATE Qt6::DBus)
     target_compile_definitions(mark-shot PRIVATE MARK_SHOT_WITH_DBUS)
@@ -416,6 +438,25 @@ add_subdirectory(plugins/code-scan-zxing)
 include(CTest)
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
+
+    if(APPLE)
+        qt_add_executable(mark-shot-macos-capture-compositor-test
+            tests/macos_capture_compositor_test.cpp
+            src/platform/macos/macos_capture_compositor.cpp
+        )
+        target_include_directories(mark-shot-macos-capture-compositor-test PRIVATE src)
+        target_link_libraries(mark-shot-macos-capture-compositor-test PRIVATE Qt6::Gui Qt6::Test)
+        add_test(NAME macos-capture-compositor COMMAND mark-shot-macos-capture-compositor-test)
+
+        qt_add_executable(mark-shot-macos-clipboard-test
+            tests/macos_clipboard_test.mm
+            src/platform/macos/macos_clipboard.mm
+        )
+        set_source_files_properties(tests/macos_clipboard_test.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_include_directories(mark-shot-macos-clipboard-test PRIVATE src)
+        target_link_libraries(mark-shot-macos-clipboard-test PRIVATE Qt6::Gui Qt6::Test ${MARK_SHOT_APPKIT})
+        add_test(NAME macos-clipboard COMMAND mark-shot-macos-clipboard-test)
+    endif()
 
     qt_add_executable(mark-shot-capture-geometry-test
         tests/capture_geometry_test.cpp

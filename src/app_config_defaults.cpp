@@ -83,7 +83,7 @@ QJsonObject defaultAppConfigRoot(const QString &windowDetectionCommand)
     root.insert(QStringLiteral("shortcuts"), shortcuts);
 
     QJsonObject tray;
-#if defined(Q_OS_WIN)
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     tray.insert(QStringLiteral("enabled"), true);
 #else
     tray.insert(QStringLiteral("enabled"), false);

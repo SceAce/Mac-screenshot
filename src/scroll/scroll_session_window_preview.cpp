@@ -358,7 +358,17 @@ void ScrollSessionWindow::copyResult()
         return;
     }
 
-    markshot::copyImageToClipboard(result);
+    if (!markshot::copyImageToClipboard(result)) {
+        m_paused = true;
+        m_autoPausedForPreview = false;
+        cancelScrollIdlePause();
+        m_statusText = MS_TR("Copy failed");
+        updatePreviewPanelVisibility();
+        refreshControlLabels();
+        updateGnomeShellPreview(true);
+        update();
+        return;
+    }
     close();
 }
 

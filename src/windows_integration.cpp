@@ -1,4 +1,7 @@
 #include "windows_integration.h"
+#ifdef Q_OS_MACOS
+#include "platform/macos/macos_capture.h"
+#endif
 
 #include "debug_log.h"
 
@@ -326,6 +329,8 @@ void showFullScreenOnScreen(QWidget *widget, QScreen *screen)
 #if defined(Q_OS_WIN)
     widget->setWindowState(widget->windowState() & ~Qt::WindowFullScreen);
     widget->show();
+#elif defined(Q_OS_MACOS)
+    markshot::macos::showCaptureOverlay(widget, screen);
 #else
     widget->showFullScreen();
 #endif

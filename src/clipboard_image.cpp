@@ -17,6 +17,10 @@
 
 #include <optional>
 
+#ifdef Q_OS_MACOS
+#include "platform/macos/macos_clipboard.h"
+#endif
+
 namespace markshot {
 namespace {
 
@@ -44,7 +48,7 @@ enum class ClipboardPayload {
 /// @return The detected ClipboardBackend enum value.
 ClipboardBackend clipboardBackend(const QProcessEnvironment &environment)
 {
-#if defined(Q_OS_WIN)
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     Q_UNUSED(environment);
     return ClipboardBackend::None;
 #else
@@ -234,6 +238,10 @@ bool copyToPersistentClipboardOwner(const QByteArray &payload, const QString &su
 /// @return True if the image was successfully copied.
 bool copyImageDataToClipboard(const QImage &image, const QByteArray &png)
 {
+#ifdef Q_OS_MACOS
+    Q_UNUSED(image);
+    return macos::copyPngToClipboard(png);
+#else
     QClipboard *clipboard = QApplication::clipboard();
     const std::optional<ClipboardOwnerCommand> owner =
         clipboardOwnerCommand(ClipboardPayload::ImagePng);
@@ -247,6 +255,7 @@ bool copyImageDataToClipboard(const QImage &image, const QByteArray &png)
         break;
     }
     return false;
+#endif
 }
 
 /// @brief Copies a URL to both the system clipboard and a persistent clipboard owner process.

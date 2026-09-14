@@ -18,6 +18,13 @@
 #include "ui/theme.h"
 #include "window_detection.h"
 #include "windows_tray_controller.h"
+#ifdef Q_OS_MACOS
+#include "platform/macos/macos_capture.h"
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QScopedValueRollback>
+#include <QTextStream>
+#endif
 
 #include <QApplication>
 #include <QCommandLineParser>
@@ -137,7 +144,27 @@ int main(int argc, char *argv[])
     parser.addOption(noDebugOption);
     parser.addOption(debugLogOption);
     markshot::cli::addHeadlessCaptureOptions(&parser);
+#ifdef Q_OS_MACOS
+    parser.addOption(QCommandLineOption(QStringLiteral("check-permissions"),
+                                       QStringLiteral("Print macOS screen recording permission as JSON without prompting.")));
+    parser.addOption(QCommandLineOption(QStringLiteral("request-permissions"),
+                                       QStringLiteral("Show the macOS screen recording permission guide.")));
+#endif
     parser.process(app);
+
+#ifdef Q_OS_MACOS
+    if (parser.isSet(QStringLiteral("check-permissions"))) {
+        const bool granted = markshot::macos::screenCapturePermissionGranted();
+        QTextStream(stdout) << QJsonDocument(QJsonObject{
+            {QStringLiteral("screenRecording"), granted},
+            {QStringLiteral("bundleIdentifier"), QStringLiteral(MARK_SHOT_MACOS_BUNDLE_ID)}
+        }).toJson(QJsonDocument::Compact) << Qt::endl;
+        return granted ? 0 : 1;
+    }
+    if (parser.isSet(QStringLiteral("request-permissions"))) {
+        return markshot::macos::ensureScreenCapturePermission() ? 0 : 1;
+    }
+#endif
 
     if (parser.isSet(stopRecordingOption)) {
         return markshot::cli::stopRecordingFromCommandLine();
@@ -351,14 +378,32 @@ int main(int argc, char *argv[])
     }
 
     bool captureActive = false;
+#ifdef Q_OS_MACOS
+    bool captureStarting = false;
+#endif
     auto launchCapture = [&app,
                           &captureActive,
+#ifdef Q_OS_MACOS
+                          &captureStarting,
+#endif
                           useRegularWindow](bool startFullscreen,
                                         bool requestAllOutputs,
                                         std::optional<markshot::recording::RecordingOptions> regionRecordingOptions = std::nullopt) -> bool {
         if (captureActive) {
             return true;
         }
+
+#ifdef Q_OS_MACOS
+        // Native capture and authorization pump an event loop. Avoid reentry
+        // from a second IPC request or tray action while capture is starting.
+        if (captureStarting) {
+            return true;
+        }
+        QScopedValueRollback<bool> starting(captureStarting, true);
+        if (!markshot::macos::ensureScreenCapturePermission()) {
+            return false;
+        }
+#endif
 
         QString captureError;
         markshot::DefaultTools defaultTools = markshot::configuredDefaultTools(nullptr);
@@ -466,6 +511,13 @@ int main(int argc, char *argv[])
             QMessageBox::critical(nullptr, QStringLiteral("Mark Shot"), trayController->errorString());
             return 1;
         }
+#ifdef Q_OS_MACOS
+        if (!explicitTrayOnly) {
+            QTimer::singleShot(0, &app, [launchCapture, fullscreenAnnotation, allOutputs] {
+                launchCapture(fullscreenAnnotation, allOutputs);
+            });
+        }
+#endif
         return QApplication::exec();
     }
 

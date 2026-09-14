@@ -24,12 +24,16 @@ class GlobalShortcutManager;
 class WindowsTrayController final : public QObject, public QAbstractNativeEventFilter {
 public:
     struct Config {
-#if defined(Q_OS_WIN)
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
         bool autoStart = true;
 #else
         bool autoStart = false;
 #endif
+#if defined(Q_OS_MACOS)
+        bool hotkeysEnabled = false;
+#else
         bool hotkeysEnabled = true;
+#endif
         QKeySequence captureHotkey = QKeySequence(QStringLiteral("Ctrl+Alt+S"));
         QKeySequence fullscreenHotkey;
         QKeySequence stopRecordingHotkey;

@@ -545,6 +545,16 @@ cmake --build build-windows
 
 Windows support currently targets normal screenshots and image annotation. Scrolling capture, compositor-specific window detection, and Linux desktop entries are not available on Windows. The bundled Python helper scripts (`mark-shot-ocr`, `mark-shot-code-scan`, `mark-shot-translate`) are not installed automatically—see the [OCR Backend](#ocr-backend-optional), [Code Scan Backend](#code-scan-backend-optional), and translation sections above for manual Windows setup instructions.
 
+#### macOS (experimental)
+
+An initial macOS 14+ port provides ScreenCaptureKit screenshots, a Screen Recording
+permission guide, annotation, clipboard export, saving, pinned images, and a menu bar
+entry. The current build targets Apple Silicon. Global shortcuts, login startup,
+continuous recording, and audio capture still need macOS integration.
+
+See the [macOS development guide](docs/macos-development.zh-CN.md) for fish-compatible
+build commands, local `.app` packaging, and permission setup.
+
 ### Build Steps
 
 ```bash

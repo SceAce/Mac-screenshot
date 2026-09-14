@@ -51,6 +51,29 @@ Language detectLanguage()
 const QHash<QString, QString> &chineseTable()
 {
     static const QHash<QString, QString> table = {
+        {QStringLiteral("Screen Recording Permission"), QStringLiteral("屏幕录制权限")},
+        {QStringLiteral("Request Permission"), QStringLiteral("请求权限")},
+        {QStringLiteral("Open System Settings"), QStringLiteral("打开系统设置")},
+        {QStringLiteral("Check Again"), QStringLiteral("重新检查")},
+        {QStringLiteral("Screen Recording: not authorized"), QStringLiteral("屏幕录制：未授权")},
+        {QStringLiteral("Not authorized yet. Enable Mark Shot in System Settings; you may need to reopen the app."),
+         QStringLiteral("尚未获得授权。请在系统设置中启用 Mark Shot，必要时退出并重新打开应用。")},
+        {QStringLiteral("Mark Shot needs Screen Recording permission to capture your screen.\n\n"
+                        "1. Click Request Permission.\n"
+                        "2. Enable Mark Shot in System Settings > Privacy & Security > Screen & System Audio Recording.\n"
+                        "3. Return here to continue. If macOS asks you to quit and reopen Mark Shot, do so.\n\n"
+                        "Screenshots stay on your Mac unless you choose to upload them."),
+         QStringLiteral("Mark Shot 需要屏幕录制权限才能截取屏幕内容。\n\n"
+                        "1. 点击“请求权限”。\n"
+                        "2. 在“系统设置 → 隐私与安全性 → 屏幕与系统音频录制”中启用 Mark Shot（较旧系统中名为“屏幕录制”）。\n"
+                        "3. 返回此窗口继续。如果 macOS 提示退出并重新打开应用，请按系统提示操作。\n\n"
+                        "截图保存在本机，只有主动使用上传功能才会上传图片。")},
+        {QStringLiteral("Screen Recording permission is required. Open Mark Shot.app and allow it in System Settings > Privacy & Security > Screen & System Audio Recording."),
+         QStringLiteral("需要屏幕录制权限。请打开 Mark Shot.app，在“系统设置 → 隐私与安全性 → 屏幕与系统音频录制”中授权。")},
+        {QStringLiteral("Screen capture timed out. Check Screen Recording permission and try again."),
+         QStringLiteral("截图超时。请检查屏幕录制权限后重试。")},
+        {QStringLiteral("No displays are available for capture."), QStringLiteral("没有可供截图的显示器。")},
+        {QStringLiteral("The display returned an empty screenshot."), QStringLiteral("显示器返回了空截图。")},
         // Window titles.
         {QStringLiteral("Mark Shot"), QStringLiteral("Mark Shot")},
         {QStringLiteral("Pinned Mark Shot"), QStringLiteral("钉住的截图")},

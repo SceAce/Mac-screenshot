@@ -33,6 +33,8 @@ QString appDataDirectory()
         return appLocalData;
     }
     return QDir::home().filePath(QStringLiteral("AppData/Local/mark-shot"));
+#elif defined(Q_OS_MACOS)
+    return QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
 #else
     const QString dataHome = qEnvironmentVariable("XDG_DATA_HOME").trimmed();
     const QString userBase = dataHome.isEmpty()
@@ -53,6 +55,9 @@ QStringList pluginSearchDirs()
 {
     QStringList dirs;
     const QString appDir = QCoreApplication::applicationDirPath();
+#ifdef Q_OS_MACOS
+    addSearchDir(&dirs, QDir(appDir).filePath(QStringLiteral("../PlugIns/markshot")));
+#endif
     // 1. 系统级与应用相邻目录，支持安装包和免安装目录。
     addSearchDir(&dirs, QDir(appDir).filePath(QStringLiteral("plugins")));
     addSearchDir(&dirs, QDir(appDir).filePath(QStringLiteral("../lib/mark-shot/plugins")));

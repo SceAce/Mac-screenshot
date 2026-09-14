@@ -1,5 +1,8 @@
 #include "screen_capture_internal.h"
 #include "screen_capture_cursor.h"
+#ifdef Q_OS_MACOS
+#include "platform/macos/macos_capture.h"
+#endif
 
 CaptureResult captureScreenFrame(const CaptureRequest &request)
 {
@@ -15,6 +18,8 @@ CaptureResult captureScreenFrame(const CaptureRequest &request)
                            result.error.toUtf8().constData());
         result = captureWithQScreen(request);
     }
+#elif defined(Q_OS_MACOS)
+    CaptureResult result = markshot::macos::captureScreen(request);
 #elif defined(MARK_SHOT_WITH_DBUS)
     CaptureResult result = isWaylandSession()
         ? captureWaylandFrame(request)
