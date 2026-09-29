@@ -3,6 +3,9 @@
 #include "markshot/ocr_provider_plugin.h"
 #include "providers/ocr/ocr_plugin_task.h"
 #include "providers/ocr/ocr_tesseract_task.h"
+#if defined(Q_OS_MACOS)
+#include "providers/ocr/ocr_vision_task.h"
+#endif
 #include "providers/provider_plugin_registry.h"
 #include "providers/provider_process_task.h"
 
@@ -70,6 +73,33 @@ QString normalizedProviderKind(const QString &provider, QString *pluginId)
     return QStringLiteral("auto");
 }
 
+ProviderTask *createBuiltinTask(const OcrTaskRequest &request, QObject *parent)
+{
+#if defined(Q_OS_MACOS)
+    return new OcrVisionTask(request.imagePath, parent);
+#else
+    return new OcrTesseractTask(request.imagePath, parent);
+#endif
+}
+
+bool builtinOcrAvailable()
+{
+#if defined(Q_OS_MACOS)
+    return OcrVisionTask::available();
+#else
+    return OcrTesseractTask::available();
+#endif
+}
+
+QString builtinOcrName()
+{
+#if defined(Q_OS_MACOS)
+    return QStringLiteral("builtin (Apple Vision)");
+#else
+    return QStringLiteral("builtin (tesseract)");
+#endif
+}
+
 }  // namespace
 
 bool legacyOcrHelperConfigured()
@@ -103,7 +133,7 @@ ProviderTask *createOcrTask(const OcrTaskRequest &request, QObject *parent)
         return createHelperTask(request, parent);
     }
     if (kind == QStringLiteral("builtin")) {
-        return new OcrTesseractTask(request.imagePath, parent);
+        return createBuiltinTask(request, parent);
     }
     if (kind == QStringLiteral("plugin")) {
         if (markshot::plugin::OcrProviderPlugin *plugin = pickOcrPlugin(pluginId)) {
@@ -119,8 +149,8 @@ ProviderTask *createOcrTask(const OcrTaskRequest &request, QObject *parent)
     if (markshot::plugin::OcrProviderPlugin *plugin = pickOcrPlugin(QString())) {
         return new OcrPluginTask(plugin, request.imagePath, parent);
     }
-    if (OcrTesseractTask::available()) {
-        return new OcrTesseractTask(request.imagePath, parent);
+    if (builtinOcrAvailable()) {
+        return createBuiltinTask(request, parent);
     }
     return createHelperTask(request, parent);
 }
@@ -137,7 +167,7 @@ QString resolvedOcrProviderName(const OcrTaskRequest &request)
         return QStringLiteral("helper (mark-shot-ocr)");
     }
     if (kind == QStringLiteral("builtin")) {
-        return QStringLiteral("builtin (tesseract)");
+        return builtinOcrName();
     }
     if (kind == QStringLiteral("plugin")) {
         if (markshot::plugin::OcrProviderPlugin *plugin = pickOcrPlugin(pluginId)) {
@@ -152,8 +182,8 @@ QString resolvedOcrProviderName(const OcrTaskRequest &request)
     if (markshot::plugin::OcrProviderPlugin *plugin = pickOcrPlugin(QString())) {
         return QStringLiteral("plugin (%1)").arg(plugin->displayName());
     }
-    if (OcrTesseractTask::available()) {
-        return QStringLiteral("builtin (tesseract)");
+    if (builtinOcrAvailable()) {
+        return builtinOcrName();
     }
     return QStringLiteral("helper (mark-shot-ocr)");
 }

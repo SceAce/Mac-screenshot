@@ -116,6 +116,9 @@ target_link_libraries(mark-shot-recording-dialog-config-test
         Qt6::Gui
         Qt6::Test
 )
+if(APPLE)
+    mark_shot_add_macos_window_detection(mark-shot-recording-dialog-config-test)
+endif()
 add_test(NAME recording-dialog-config COMMAND mark-shot-recording-dialog-config-test)
 
 if(FFmpegLibav_FOUND)

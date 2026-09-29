@@ -700,6 +700,9 @@ void ShotWindow::initializeWindowDetection(QVector<markshot::WindowInfo> windowI
     if (windowInfos.isEmpty()) {
 #if defined(Q_OS_WIN)
         windowInfos = markshot::windows::enumerateWindowInfos();
+#elif defined(Q_OS_MACOS)
+        // Native detection is sampled before the overlay is shown. An empty
+        // result is legitimate and must not fall through to X11 tools.
 #else
         windowInfos = enumerateX11WindowInfos();
 #endif

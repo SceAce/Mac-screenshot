@@ -6,6 +6,10 @@
 #include "shell_command.h"
 #include "window_detection_session.h"
 
+#if defined(Q_OS_MACOS)
+#include "platform/macos/macos_window_detection.h"
+#endif
+
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -634,6 +638,11 @@ QVector<WindowInfo> collectConfiguredWindowInfos(const QRect &captureGeometry,
                                                  const QString &outputName,
                                                  bool allOutputs)
 {
+#if defined(Q_OS_MACOS)
+    Q_UNUSED(outputName)
+    Q_UNUSED(allOutputs)
+    return markshot::macos::enumerateWindowInfos(captureGeometry);
+#else
     const std::optional<WindowDetectionConfig> config = readWindowDetectionConfig();
     if (!config.has_value()) {
         return {};
@@ -681,6 +690,7 @@ QVector<WindowInfo> collectConfiguredWindowInfos(const QRect &captureGeometry,
     const QVector<WindowInfo> windows = parseWindowDetectionOutput(process.readAllStandardOutput());
     markshot::debugLog("window-detection", "script returned windows=%d", static_cast<int>(windows.size()));
     return windows;
+#endif
 }
 
 } // namespace markshot

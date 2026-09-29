@@ -715,3 +715,11 @@ This project is licensed under the **MIT License**. For details, please refer to
 ## Acknowledgements
 
 Thanks to [serendipitywgy](https://github.com/serendipitywgy) for contributions from `serendipitywgy/mark-shot`, including cross-desktop compatibility improvements, the OCR copy toolbar action, and smart rectangle preselection.
+
+
+## macOS feature status (2026-09-29)
+
+- Native window snapping now uses CoreGraphics to outline the topmost window under the pointer and select it with one click.
+- The built-in OCR backend uses Apple Vision and does not require Python, Tesseract, or additional model files.
+- Translation works through the built-in OpenAI-compatible HTTP backend and the Tencent, Baidu, Youdao, and OpenAI-compatible provider plugins; online services require network access and API credentials.
+- The macOS packaging script bundles provider plugins by default. Use `--without-provider-plugins` for a minimal package.

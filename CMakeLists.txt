@@ -561,6 +561,9 @@ if(BUILD_TESTING)
             Qt6::Gui
             Qt6::Test
     )
+    if(APPLE)
+        mark_shot_add_macos_window_detection(mark-shot-clipboard-image-config-test)
+    endif()
     add_test(NAME clipboard-image-config COMMAND mark-shot-clipboard-image-config-test)
 
     qt_add_executable(mark-shot-export-image-effect-test
@@ -682,6 +685,9 @@ if(BUILD_TESTING)
             Qt6::Gui
             Qt6::Test
     )
+    if(APPLE)
+        mark_shot_add_macos_window_detection(mark-shot-kde-capture-config-test)
+    endif()
     add_test(NAME kde-capture-config COMMAND mark-shot-kde-capture-config-test)
 
     qt_add_executable(mark-shot-save-path-config-test

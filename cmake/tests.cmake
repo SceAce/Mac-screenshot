@@ -22,6 +22,9 @@ target_link_libraries(mark-shot-color-history-store-test
         Qt6::Gui
         Qt6::Test
 )
+if(APPLE)
+    mark_shot_add_macos_window_detection(mark-shot-color-history-store-test)
+endif()
 add_test(NAME color-history-store COMMAND mark-shot-color-history-store-test)
 
 qt_add_executable(mark-shot-selection-history-test
@@ -48,6 +51,9 @@ target_link_libraries(mark-shot-selection-history-test
         Qt6::Gui
         Qt6::Test
 )
+if(APPLE)
+    mark_shot_add_macos_window_detection(mark-shot-selection-history-test)
+endif()
 add_test(NAME selection-history COMMAND mark-shot-selection-history-test)
 
 qt_add_executable(mark-shot-app-config-defaults-test

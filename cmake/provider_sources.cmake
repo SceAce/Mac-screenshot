@@ -31,3 +31,10 @@ set(MARK_SHOT_PROVIDER_SOURCES
     plugin-sdk/markshot/ocr_provider_plugin.h
     plugin-sdk/markshot/translate_provider_plugin.h
 )
+
+if(APPLE)
+    list(APPEND MARK_SHOT_PROVIDER_SOURCES
+        src/providers/ocr/ocr_vision_task.h
+        src/providers/ocr/ocr_vision_task.mm
+    )
+endif()

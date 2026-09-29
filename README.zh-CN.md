@@ -805,3 +805,11 @@ gdbus call --session \
 ## 致谢
 
 感谢 [serendipitywgy](https://github.com/serendipitywgy) 通过 `serendipitywgy/mark-shot` 贡献跨桌面兼容性改进、OCR 复制工具栏动作和智能矩形框预选功能。
+
+
+## macOS 功能状态（2026-09-29）
+
+- 截图窗口自动吸附已使用 CoreGraphics 原生实现，支持悬停勾画和单击选中顶层窗口。
+- 内置 OCR 使用 Apple Vision，无需安装 Python、Tesseract 或额外识别模型。
+- 翻译核心及腾讯、百度、有道、OpenAI-compatible provider 可在 macOS 使用；在线服务需要网络和 API 凭据。
+- macOS 打包脚本默认包含 provider 插件，可通过 `--without-provider-plugins` 构建精简包。

@@ -35,6 +35,14 @@ qt_add_executable(mark-shot-ocr-provider-factory-test
     src/shell_command.cpp
     src/shell_command.h
 )
+if(APPLE)
+    target_sources(mark-shot-ocr-provider-factory-test PRIVATE
+        src/providers/ocr/ocr_vision_task.h
+        src/providers/ocr/ocr_vision_task.mm
+    )
+    set_source_files_properties(src/providers/ocr/ocr_vision_task.mm
+        PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+endif()
 target_include_directories(mark-shot-ocr-provider-factory-test PRIVATE src plugin-sdk)
 target_link_libraries(mark-shot-ocr-provider-factory-test
     PRIVATE
@@ -43,6 +51,12 @@ target_link_libraries(mark-shot-ocr-provider-factory-test
         Qt6::Gui
         Qt6::Test
 )
+if(APPLE)
+    target_link_libraries(mark-shot-ocr-provider-factory-test PRIVATE
+        ${MARK_SHOT_COREGRAPHICS}
+        ${MARK_SHOT_VISION}
+    )
+endif()
 add_test(NAME ocr-provider-factory COMMAND mark-shot-ocr-provider-factory-test)
 
 qt_add_executable(mark-shot-rapid-ocr-word-segments-test

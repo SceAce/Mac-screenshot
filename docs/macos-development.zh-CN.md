@@ -95,3 +95,29 @@ Qt 默认未压缩 TIFF 在长截图时膨胀为数十 MB。图片数据在窗�
 
 本机实测只有内建显示器。外接显示器、跨 Spaces，以及标注后的跨应用粘贴仍需要
 进一步实机验证；混合缩放和负坐标目前由自动测试覆盖。
+
+
+## 已移植功能（2026-09-29）
+
+### 窗口自动吸附
+
+- macOS 使用 CoreGraphics 的 `CGWindowListCopyWindowInfo` 枚举当前屏幕上的普通应用窗口，并按系统窗口层级参与鼠标悬停命中。
+- 截图时会勾画鼠标所在窗口的轮廓，单击即可直接选中；桌面元素、透明窗口和 Mark Shot 自身窗口会被过滤。
+- 窗口坐标与现有的多显示器截图坐标保持一致。首次使用截图仍需在“系统设置 → 隐私与安全性 → 屏幕与系统录音”中授权。
+
+### OCR
+
+- macOS 的 `builtin` OCR 后端已改为 Apple Vision（`VNRecognizeTextRequest`），无需 Python、Tesseract 或额外模型文件。
+- Vision 识别在线程池中运行，沿用现有的超时、取消和统一 token 输出格式；`auto` 模式仍会兼容已有 helper 和插件配置。
+
+### 翻译
+
+- OpenAI-compatible 内置 HTTP 翻译和腾讯、百度、有道、OpenAI provider 插件均可在 macOS 使用；网络翻译需要配置相应 API 凭据。
+- `scripts/package-macos.py` 现在默认构建并打包 provider 插件。需要最小包时可使用 `--without-provider-plugins`；旧的 `--with-provider-plugins` 参数继续兼容。
+
+### 实机验收
+
+1. 在单屏和多屏环境移动鼠标，确认顶层窗口边框能够高亮，重叠窗口优先选择最上层窗口。
+2. 截取包含中英文的清晰文字，分别验证 `builtin` 和 `auto` OCR。
+3. 为至少一个翻译 provider 配置凭据，验证 OCR 后翻译、错误提示和超时取消行为。
+4. 检查发布包的 `Contents/PlugIns/markshot/`，确认所需 provider 动态库已随应用分发。

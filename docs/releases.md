@@ -1,5 +1,12 @@
 # Release Notes
 
+## Unreleased — macOS feature parity (2026-09-29)
+
+- Added native CoreGraphics window detection for hover outlines and one-click window selection during capture.
+- Added a built-in Apple Vision OCR backend with normalized token geometry, cancellation, and timeout support.
+- Enabled macOS distribution of translation/OCR provider plugins by default, with `--without-provider-plugins` available for minimal bundles.
+- Expanded macOS development documentation with permissions, packaging, and real-device acceptance checks.
+
 ### 0.1.51
 
 - **Translation Request Body Extensions**: `translation.extraBody` adds JSON fields to the top level of OpenAI-compatible translation requests, for both the built-in implementation and the plugin. The default is `{}`; `model`, `temperature`, and `messages` cannot be overridden. See the [configuration guide](configuration.md).

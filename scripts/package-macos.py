@@ -93,6 +93,13 @@ def main():
     parser.add_argument("--identity", default="-", help="Signing identity; '-' creates a local ad-hoc signature")
     parser.add_argument("--with-provider-plugins", action="store_true",
                         help="Also bundle optional OCR/translation/scanning provider plugins")
+    parser.add_argument(
+        "--without-provider-plugins",
+        dest="with_provider_plugins",
+        action="store_false",
+        help="Skip building and bundling optional OCR and translation provider plugins.",
+    )
+    parser.set_defaults(with_provider_plugins=True)
     args = parser.parse_args()
     if sys.platform != "darwin":
         parser.error("This packaging command requires macOS.")

@@ -1,5 +1,8 @@
 #include "providers/ocr/ocr_provider_factory.h"
 #include "providers/ocr/ocr_tesseract_task.h"
+#if defined(Q_OS_MACOS)
+#include "providers/ocr/ocr_vision_task.h"
+#endif
 #include "providers/provider_task.h"
 
 #include <QtTest/QtTest>
@@ -7,6 +10,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPainter>
+#include <QTemporaryDir>
 #include <QTemporaryFile>
 
 using namespace markshot::providers;
@@ -60,7 +65,11 @@ private slots:
         QCOMPARE(resolvedOcrProviderName(request), QStringLiteral("helper (mark-shot-ocr)"));
 
         request.provider = QStringLiteral("builtin");
+#if defined(Q_OS_MACOS)
+        QCOMPARE(resolvedOcrProviderName(request), QStringLiteral("builtin (Apple Vision)"));
+#else
         QCOMPARE(resolvedOcrProviderName(request), QStringLiteral("builtin (tesseract)"));
+#endif
     }
 
     /**
@@ -81,7 +90,7 @@ private slots:
     }
 
     /**
-     * 验证显式 builtin 请求创建 tesseract 任务。
+     * 验证显式 builtin 请求创建当前平台的内置 OCR 任务。
      * @return 无返回值。
      */
     void createsBuiltinTask()
@@ -90,10 +99,49 @@ private slots:
         request.provider = QStringLiteral("builtin");
         request.imagePath = QStringLiteral("/nonexistent.png");
         ProviderTask *task = createOcrTask(request);
+#if defined(Q_OS_MACOS)
+        QVERIFY(qobject_cast<OcrVisionTask *>(task) != nullptr);
+#else
         QVERIFY(qobject_cast<OcrTesseractTask *>(task) != nullptr);
+#endif
         delete task;
     }
+
+#if defined(Q_OS_MACOS)
+    /**
+     * 验证 Apple Vision 能对生成的清晰文字图片返回标准 token JSON。
+     * @return 无返回值。
+     */
+    void visionRecognizesGeneratedText()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString imagePath = directory.filePath(QStringLiteral("vision-ocr.png"));
+
+        QImage image(1200, 300, QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::white);
+        QPainter painter(&image);
+        QFont font(QStringLiteral("Helvetica"), 96, QFont::Bold);
+        painter.setFont(font);
+        painter.setPen(Qt::black);
+        painter.drawText(image.rect(), Qt::AlignCenter, QStringLiteral("MARK SHOT 123"));
+        painter.end();
+        QVERIFY(image.save(imagePath));
+
+        OcrVisionTask task(imagePath);
+        // Vision may need a longer one-time initialization on a cold macOS session.
+        task.start(120000);
+        const TaskResult result = task.waitForResult();
+        QVERIFY2(result.ok, result.errorOutput.constData());
+
+        const QJsonObject root = QJsonDocument::fromJson(result.output).object();
+        QCOMPARE(root.value(QStringLiteral("backend")).toString(), QStringLiteral("apple-vision"));
+        const QJsonArray tokens = root.value(QStringLiteral("tokens")).toArray();
+        QVERIFY(!tokens.isEmpty());
+        QVERIFY(!tokens.first().toObject().value(QStringLiteral("text")).toString().isEmpty());
+    }
+#endif
 };
 
-QTEST_GUILESS_MAIN(OcrProviderFactoryTest)
+QTEST_MAIN(OcrProviderFactoryTest)
 #include "ocr_provider_factory_test.moc"
