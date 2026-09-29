@@ -41,15 +41,13 @@ class ReleaseFfmpegPolicyTest(unittest.TestCase):
         for package in DEBIAN_DEVELOPMENT_PACKAGES:
             self.assertIn(package, text)
 
-    def test_linux_ci_jobs_require_ffmpeg(self) -> None:
-        """验证常规 Linux 构建任务安装并强制启用 FFmpeg。"""
-        x86_job = workflow_job(".github/workflows/build.yml", "linux")
-        arm_job = workflow_job(".github/workflows/build.yml", "linux-arm64")
+    def test_primary_ci_job_targets_macos(self) -> None:
+        """验证主 CI 只构建 macOS，不把 Linux FFmpeg 依赖带入 macOS 包。"""
+        macos_job = workflow_job(".github/workflows/build.yml", "macos")
 
-        self.assertIn("ffmpeg", x86_job)
-        self.assertIn(FFMPEG_FLAG, x86_job)
-        self.assert_debian_ffmpeg_development_packages(arm_job)
-        self.assertIn(FFMPEG_FLAG, arm_job)
+        self.assertIn("runs-on: macos-15", macos_job)
+        self.assertIn("CMAKE_OSX_ARCHITECTURES=arm64", macos_job)
+        self.assertNotIn(FFMPEG_FLAG, macos_job)
 
     def test_release_binary_jobs_require_ffmpeg(self) -> None:
         """验证通用二进制发行任务安装并强制启用 FFmpeg。"""

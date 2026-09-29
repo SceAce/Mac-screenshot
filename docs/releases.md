@@ -5,6 +5,7 @@
 - Added native CoreGraphics window detection for hover outlines and one-click window selection during capture.
 - Added a built-in Apple Vision OCR backend with normalized token geometry, cancellation, and timeout support.
 - Enabled macOS distribution of translation/OCR provider plugins by default, with `--without-provider-plugins` available for minimal bundles.
+- Replaced automatic Linux and Windows checks with a native Apple Silicon macOS build, test, ZIP, and DMG pipeline; legacy Linux release workflows are now manual-only.
 - Expanded macOS development documentation with permissions, packaging, and real-device acceptance checks.
 
 ### 0.1.51

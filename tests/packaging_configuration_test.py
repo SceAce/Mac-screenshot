@@ -158,7 +158,7 @@ class PackagingConfigurationTest(unittest.TestCase):
                 content = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
                 self.assertRegex(content, pattern)
 
-        # 3. 验证发布文档将本次版本放在首项
+        # 3. 验证发布文档的首个已发布版本与本次版本一致；允许未发布说明置顶
         releases_en = (PROJECT_ROOT / "docs/releases.md").read_text(encoding="utf-8")
         releases_zh = (PROJECT_ROOT / "docs/releases.zh-CN.md").read_text(
             encoding="utf-8"
@@ -168,8 +168,15 @@ class PackagingConfigurationTest(unittest.TestCase):
             / "packaging/flatpak/io.github.jswysnemc.MarkShot.metainfo.xml"
         ).read_text(encoding="utf-8")
 
-        self.assertTrue(releases_en.startswith(f"# Release Notes\n\n### {version}"))
-        self.assertTrue(releases_zh.startswith(f"# 发版说明\n\n### {version}"))
+        self.assertTrue(releases_en.startswith("# Release Notes\n\n"))
+        self.assertTrue(releases_zh.startswith("# 发版说明\n\n"))
+        version_heading_pattern = r"(?m)^### ([0-9]+\.[0-9]+\.[0-9]+)$"
+        release_versions_en = re.findall(version_heading_pattern, releases_en)
+        release_versions_zh = re.findall(version_heading_pattern, releases_zh)
+        self.assertTrue(release_versions_en)
+        self.assertTrue(release_versions_zh)
+        self.assertEqual(release_versions_en[0], version)
+        self.assertEqual(release_versions_zh[0], version)
         self.assertIn(
             f'<release version="{version}" date="{release_date}" />', metainfo
         )

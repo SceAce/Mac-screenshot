@@ -4,6 +4,11 @@
 屏幕权限引导、截图选区、标注、复制、保存、贴图及菜单栏入口。
 macOS 全局快捷键、登录启动、连续录屏和音频采集尚未适配。
 
+仓库的自动 CI 使用 GitHub Actions `macos-15` Apple Silicon runner，执行原生
+构建、完整 CTest、应用依赖部署和 ad-hoc 签名，并上传 `.app.zip` 与 `.dmg`。
+原有 Linux/Windows 源码仍保留并由平台条件隔离；Linux 打包工作流仅允许手动触发，
+不会再随 macOS 分支提交、标签或 GitHub Release 自动运行。
+
 ## 构建（fish 可直接执行）
 
 ```fish

@@ -5,6 +5,7 @@
 - 新增基于 CoreGraphics 的原生窗口检测，实现截图时悬停勾画与单击选择窗口。
 - 新增 Apple Vision 内置 OCR，支持统一坐标输出、取消和超时处理。
 - macOS 发布包默认构建并携带 OCR/翻译 provider 插件，同时提供 `--without-provider-plugins` 精简选项。
+- 自动 CI 改为 Apple Silicon 原生 macOS 构建、测试、ZIP 和 DMG 打包；旧 Linux 发布工作流仅保留手动触发。
 - 补充权限、打包和实机验收文档。
 
 ### 0.1.51
