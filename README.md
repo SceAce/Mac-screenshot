@@ -721,5 +721,5 @@ Thanks to [serendipitywgy](https://github.com/serendipitywgy) for contributions 
 
 - Native window snapping now uses CoreGraphics to outline the topmost window under the pointer and select it with one click.
 - The built-in OCR backend uses Apple Vision and does not require Python, Tesseract, or additional model files.
-- Translation works through the built-in OpenAI-compatible HTTP backend and the Tencent, Baidu, Youdao, and OpenAI-compatible provider plugins; online services require network access and API credentials.
+- Translation works through the built-in OpenAI-compatible HTTP backend and the Tencent, Baidu, Youdao, and OpenAI-compatible provider plugins. On macOS, `auto` falls back to `trans` with the system proxy when no API credentials are configured.
 - The macOS packaging script bundles provider plugins by default. Use `--without-provider-plugins` for a minimal package.

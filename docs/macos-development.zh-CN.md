@@ -112,7 +112,7 @@ Qt 默认未压缩 TIFF 在长截图时膨胀为数十 MB。图片数据在窗�
 
 ### 翻译
 
-- OpenAI-compatible 内置 HTTP 翻译和腾讯、百度、有道、OpenAI provider 插件均可在 macOS 使用；网络翻译需要配置相应 API 凭据。
+- OpenAI-compatible 内置 HTTP 翻译和腾讯、百度、有道、OpenAI provider 插件均可在 macOS 使用；未配置 API 凭据时，`auto` 会回退到系统 `trans`（translate-shell）。应用会继承环境中的代理变量，并在 Finder 启动时读取 macOS 系统 HTTP/HTTPS/SOCKS 代理。
 - `scripts/package-macos.py` 现在默认构建并打包 provider 插件。需要最小包时可使用 `--without-provider-plugins`；旧的 `--with-provider-plugins` 参数继续兼容。
 
 ### 实机验收

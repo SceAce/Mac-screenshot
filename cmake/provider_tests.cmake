@@ -14,6 +14,26 @@ target_link_libraries(mark-shot-translate-segments-test
 )
 add_test(NAME translate-segments COMMAND mark-shot-translate-segments-test)
 
+if(APPLE)
+    qt_add_executable(mark-shot-translate-trans-task-test
+        tests/translate_trans_task_test.cpp
+        src/debug_log.cpp
+        src/debug_log.h
+        src/providers/provider_task.cpp
+        src/providers/provider_task.h
+        src/providers/translate/translate_segments.cpp
+        src/providers/translate/translate_segments.h
+        src/providers/translate/translate_trans_task.cpp
+        src/providers/translate/translate_trans_task.h
+        src/ocr_result.cpp
+        src/ocr_result.h
+    )
+    target_include_directories(mark-shot-translate-trans-task-test PRIVATE src)
+    target_link_libraries(mark-shot-translate-trans-task-test PRIVATE
+        Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Test)
+    add_test(NAME translate-trans-task COMMAND mark-shot-translate-trans-task-test)
+endif()
+
 qt_add_executable(mark-shot-ocr-provider-factory-test
     tests/ocr_provider_factory_test.cpp
     src/debug_log.cpp
@@ -123,6 +143,8 @@ endif()
 if(TARGET mark-shot-translate-openai)
     qt_add_executable(mark-shot-translate-openai-plugin-test
         tests/translate_openai_plugin_test.cpp
+        src/debug_log.cpp
+        src/debug_log.h
         plugins/translate-openai/openai_translate_config.cpp
         plugins/translate-openai/openai_translate_config.h
         plugins/translate-openai/openai_translate_plugin.cpp

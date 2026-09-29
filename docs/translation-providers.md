@@ -105,6 +105,8 @@ Segments are sent as repeated `q` form fields and split into 4000-character batc
 
 `translation.targetLanguage` accepts an English name, a Chinese name, or a BCP-47 tag. The value is normalized once and then mapped to each vendor's own code, so `Simplified Chinese`, `简体中文`, `zh-CN`, and `zh` all resolve to Simplified Chinese.
 
+On macOS, `translation.provider: "auto"` falls back to the system `trans` (translate-shell) command when no configured OpenAI-compatible API key or vendor credentials are available. The child process inherits `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and their lowercase variants, so a desktop proxy is reused automatically. Configure an API key to use the LLM provider instead.
+
 | Language | Tencent | Baidu | Youdao |
 | :--- | :---: | :---: | :---: |
 | Simplified Chinese | `zh` | `zh` | `zh-CHS` |

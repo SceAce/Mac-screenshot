@@ -105,6 +105,8 @@ Mark Shot 的贴图窗口 OCR 结果可以直接翻译。翻译能力由 provide
 
 `translation.targetLanguage` 接受英文名、中文名或 BCP-47 标记，插件内部统一归一化后再映射到各家的语言代码。例如 `Simplified Chinese`、`简体中文`、`zh-CN`、`zh` 都会被识别为简体中文。
 
+在 macOS 上，当 `translation.provider` 为 `auto` 且没有配置 OpenAI 兼容 API Key 或厂商凭据时，会自动回退到系统的 `trans`（translate-shell）命令。子进程会继承 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及其小写变体，因此会自动沿用桌面环境的代理；配置 API Key 后则使用中转站或其他大模型翻译。
+
 | 语言 | 腾讯 | 百度 | 有道 |
 | :--- | :---: | :---: | :---: |
 | 简体中文 | `zh` | `zh` | `zh-CHS` |

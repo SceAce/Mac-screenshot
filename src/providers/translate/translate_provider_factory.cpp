@@ -5,6 +5,7 @@
 #include "providers/provider_process_task.h"
 #include "providers/translate/translate_openai_task.h"
 #include "providers/translate/translate_plugin_task.h"
+#include "providers/translate/translate_trans_task.h"
 
 #include <algorithm>
 
@@ -96,7 +97,7 @@ QString normalizedProviderKind(const QString &provider, QString *pluginId)
         return QStringLiteral("plugin");
     }
     if (trimmed == QStringLiteral("plugin") || trimmed == QStringLiteral("builtin")
-        || trimmed == QStringLiteral("helper")) {
+        || trimmed == QStringLiteral("helper") || trimmed == QStringLiteral("trans")) {
         return trimmed;
     }
     return QStringLiteral("auto");
@@ -120,6 +121,9 @@ ProviderTask *createTranslateTask(const TranslateTaskRequest &request, QObject *
     if (kind == QStringLiteral("helper")) {
         return createHelperTask(request, parent);
     }
+    if (kind == QStringLiteral("trans")) {
+        return new TranslateTransTask(request.inputJson, request.targetLanguage, parent);
+    }
     if (kind == QStringLiteral("builtin")) {
         return new TranslateOpenAiTask(request.inputJson, request.targetLanguage, request.configPath, parent);
     }
@@ -130,9 +134,15 @@ ProviderTask *createTranslateTask(const TranslateTaskRequest &request, QObject *
         return createHelperTask(request, parent);
     }
 
-    // 3. auto 链：插件 > 内置实现（与 helper 等价的 HTTP 调用）> helper 兜底
+    // 3. auto 链：已配置插件 > 内置 LLM > 无密钥时的 trans > helper 兜底
     if (markshot::plugin::TranslateProviderPlugin *plugin = pickTranslatePlugin(QString())) {
         return new TranslatePluginTask(plugin, request.inputJson, request.targetLanguage, parent);
+    }
+    if (TranslateOpenAiTask::hasApiKey(request.configPath)) {
+        return new TranslateOpenAiTask(request.inputJson, request.targetLanguage, request.configPath, parent);
+    }
+    if (TranslateTransTask::available()) {
+        return new TranslateTransTask(request.inputJson, request.targetLanguage, parent);
     }
     return new TranslateOpenAiTask(request.inputJson, request.targetLanguage, request.configPath, parent);
 }
@@ -148,6 +158,9 @@ QString resolvedTranslateProviderName(const TranslateTaskRequest &request)
     if (kind == QStringLiteral("helper")) {
         return QStringLiteral("helper (mark-shot-translate)");
     }
+    if (kind == QStringLiteral("trans")) {
+        return QStringLiteral("trans (translate-shell)");
+    }
     if (kind == QStringLiteral("builtin")) {
         return QStringLiteral("builtin (openai-compatible)");
     }
@@ -160,6 +173,9 @@ QString resolvedTranslateProviderName(const TranslateTaskRequest &request)
 
     if (markshot::plugin::TranslateProviderPlugin *plugin = pickTranslatePlugin(QString())) {
         return QStringLiteral("plugin (%1)").arg(plugin->displayName());
+    }
+    if (!TranslateOpenAiTask::hasApiKey(request.configPath) && TranslateTransTask::available()) {
+        return QStringLiteral("trans (translate-shell)");
     }
     return QStringLiteral("builtin (openai-compatible)");
 }

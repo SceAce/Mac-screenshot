@@ -288,6 +288,32 @@ private slots:
     }
 
     /**
+     * 验证中转站常见的 Responses API output_text 响应也能被提取。
+     * @return 无返回值。
+     */
+    void translatesViaResponsesStyleMockServer()
+    {
+        const QByteArray response = QByteArrayLiteral(
+            "{\"output_text\":\"{\\\"translations\\\":[{\\\"id\\\":7,\\\"text\\\":\\\"你好\\\"}]}\"}");
+        MockChatServer server(response);
+        QVERIFY(server.start());
+
+        std::unique_ptr<QTemporaryFile> config(writeTempConfig(server.baseUrl()));
+        QVERIFY(config != nullptr);
+        EnvGuard configGuard(QByteArrayLiteral("MARK_SHOT_CONFIG"), config->fileName().toUtf8());
+
+        OpenAiTranslatePlugin plugin;
+        QString error;
+        QVector<markshot::plugin::TranslateSegment> translations;
+        QVERIFY2(plugin.translate({{7, QStringLiteral("hello")}},
+                                  QStringLiteral("Simplified Chinese"),
+                                  &translations,
+                                  &error),
+                 qPrintable(error));
+        QCOMPARE(translations.value(0).text, QStringLiteral("你好"));
+    }
+
+    /**
      * 验证插件可调用 OpenAI-compatible chat/completions 接口。
      * @return 无返回值。
      */

@@ -27,6 +27,8 @@ set(MARK_SHOT_PROVIDER_SOURCES
     src/providers/translate/translate_provider_factory.h
     src/providers/translate/translate_segments.cpp
     src/providers/translate/translate_segments.h
+    src/providers/translate/translate_trans_task.cpp
+    src/providers/translate/translate_trans_task.h
     plugin-sdk/markshot/code_scan_provider_plugin.h
     plugin-sdk/markshot/ocr_provider_plugin.h
     plugin-sdk/markshot/translate_provider_plugin.h

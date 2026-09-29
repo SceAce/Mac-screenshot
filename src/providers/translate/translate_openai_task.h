@@ -35,6 +35,9 @@ public:
     void start(int timeoutMs) override;
     void cancel() override;
 
+    /** Return whether an OpenAI-compatible API key is configured. */
+    static bool hasApiKey(const QString &configPath);
+
 private:
     /**
      * 处理 HTTP 响应并生成输出 tokens JSON。

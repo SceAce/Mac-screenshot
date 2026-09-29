@@ -9,6 +9,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 
+#include <functional>
+
 namespace markshot::translate_openai {
 namespace {
 
@@ -75,22 +77,53 @@ QByteArray requestPayload(const OpenAiTranslateConfig &config,
 bool extractMessageContent(const QByteArray &body, QString *content, QString *error)
 {
     const QJsonDocument document = QJsonDocument::fromJson(body);
-    const QJsonArray choices = document.object().value(QStringLiteral("choices")).toArray();
-    if (choices.isEmpty()) {
-        if (error) {
-            *error = QStringLiteral("llm response missing choices");
-        }
+    if (!document.isObject()) {
+        if (error) *error = QStringLiteral("llm response is not valid JSON");
         return false;
     }
-    const QString value = choices.at(0)
-                              .toObject()
-                              .value(QStringLiteral("message"))
-                              .toObject()
-                              .value(QStringLiteral("content"))
-                              .toString();
-    if (value.trimmed().isEmpty()) {
+    const std::function<QString(const QJsonValue &)> textValue = [&textValue](const QJsonValue &value) {
+        QString result;
+        if (value.isString()) return value.toString();
+        if (value.isArray()) {
+            for (const QJsonValue &item : value.toArray()) {
+                const QJsonObject object = item.toObject();
+                const QString text = object.value(QStringLiteral("text")).toString(
+                    object.value(QStringLiteral("output_text")).toString());
+                if (!text.isEmpty()) result += text;
+            }
+        }
+        if (value.isObject()) {
+            const QJsonObject object = value.toObject();
+            result = object.value(QStringLiteral("content")).toString();
+            if (result.isEmpty()) result = object.value(QStringLiteral("text")).toString();
+            if (result.isEmpty()) result = object.value(QStringLiteral("output_text")).toString();
+            if (result.isEmpty()) result = textValue(object.value(QStringLiteral("content")));
+        }
+        return result;
+    };
+    const QJsonArray choices = document.object().value(QStringLiteral("choices")).toArray();
+    QString value;
+    if (!choices.isEmpty()) {
+        const QJsonObject choice = choices.first().toObject();
+        value = textValue(choice.value(QStringLiteral("message")));
+        if (value.isEmpty()) value = textValue(choice.value(QStringLiteral("delta")));
+        if (value.isEmpty()) value = textValue(choice.value(QStringLiteral("text")));
+    }
+    if (value.isEmpty()) {
+        const QJsonObject object = document.object();
+        value = textValue(object.value(QStringLiteral("output_text")));
+        if (value.isEmpty()) value = textValue(object.value(QStringLiteral("output")));
+        if (value.isEmpty()) value = textValue(object.value(QStringLiteral("content")));
+        if (value.isEmpty()) value = textValue(object.value(QStringLiteral("text")));
+    }
+    if (value.isEmpty()) {
         if (error) {
-            *error = QStringLiteral("llm response missing message content");
+            const QJsonObject object = document.object();
+            const QString apiError = object.value(QStringLiteral("error")).toObject().value(QStringLiteral("message")).toString();
+            *error = apiError.isEmpty()
+                ? (choices.isEmpty() ? QStringLiteral("llm response missing choices or output text")
+                                     : QStringLiteral("llm response missing message content"))
+                : QStringLiteral("llm response: %1").arg(apiError);
         }
         return false;
     }

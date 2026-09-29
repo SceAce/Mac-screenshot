@@ -1,5 +1,7 @@
 #include "providers/translate/translate_openai_task.h"
 
+#include "debug_log.h"
+
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -9,6 +11,7 @@
 #include <QNetworkRequest>
 #include <QRegularExpression>
 
+#include <functional>
 #include <utility>
 
 namespace markshot::providers {
@@ -51,6 +54,18 @@ QString firstNonEmpty(const QString &configValue, const QStringList &envNames, c
         }
     }
     return fallback;
+}
+
+bool configuredApiKey(const QJsonObject &config)
+{
+    QString apiKey = config.value(QStringLiteral("apiKey")).toString().trimmed();
+    if (!apiKey.isEmpty()) {
+        return true;
+    }
+    const QString apiKeyEnv = firstNonEmpty(config.value(QStringLiteral("apiKeyEnv")).toString(),
+                                            {},
+                                            QStringLiteral("OPENAI_API_KEY"));
+    return !firstNonEmpty({}, {apiKeyEnv, QStringLiteral("MARK_SHOT_LLM_API_KEY")}, {}).isEmpty();
 }
 
 /**
@@ -115,6 +130,11 @@ TranslateOpenAiTask::TranslateOpenAiTask(QByteArray inputJson,
         }
         emitFinished({false, TaskError::Timeout, {}, {}, {}});
     });
+}
+
+bool TranslateOpenAiTask::hasApiKey(const QString &configPath)
+{
+    return configuredApiKey(translationConfig(configPath));
 }
 
 void TranslateOpenAiTask::start(int timeoutMs)
@@ -231,17 +251,59 @@ void TranslateOpenAiTask::handleReply()
         return;
     }
 
-    // 1. 提取回复 content 并解析译文映射
+    // 1. 提取回复 content 并解析译文映射。中转站可能返回 Responses API、
+    //    streaming 风格或旧 chat/completions 风格，统一兼容这些形态。
     const QJsonDocument document = QJsonDocument::fromJson(body);
-    const QString content = document.object()
-                                .value(QStringLiteral("choices"))
-                                .toArray()
-                                .at(0)
-                                .toObject()
-                                .value(QStringLiteral("message"))
-                                .toObject()
-                                .value(QStringLiteral("content"))
-                                .toString();
+    const std::function<QString(const QJsonValue &)> textValue = [&textValue](const QJsonValue &value) {
+        if (value.isString()) return value.toString();
+        if (value.isArray()) {
+            QString result;
+            for (const QJsonValue &item : value.toArray()) {
+                const QJsonObject object = item.toObject();
+                QString text = object.value(QStringLiteral("text")).toString();
+                if (text.isEmpty()) text = object.value(QStringLiteral("output_text")).toString();
+                if (text.isEmpty()) text = textValue(object.value(QStringLiteral("content")));
+                result += text;
+            }
+            return result;
+        }
+        if (value.isObject()) {
+            const QJsonObject object = value.toObject();
+            QString result = object.value(QStringLiteral("content")).toString();
+            if (result.isEmpty()) result = object.value(QStringLiteral("text")).toString();
+            if (result.isEmpty()) result = object.value(QStringLiteral("output_text")).toString();
+            if (result.isEmpty()) result = textValue(object.value(QStringLiteral("content")));
+            return result;
+        }
+        return QString();
+    };
+    QString content;
+    if (document.isObject()) {
+        const QJsonObject object = document.object();
+        const QJsonArray choices = object.value(QStringLiteral("choices")).toArray();
+        if (!choices.isEmpty()) {
+            const QJsonObject choice = choices.first().toObject();
+            content = textValue(choice.value(QStringLiteral("message")));
+            if (content.isEmpty()) content = textValue(choice.value(QStringLiteral("delta")));
+            if (content.isEmpty()) content = textValue(choice.value(QStringLiteral("text")));
+        }
+        if (content.isEmpty()) content = textValue(object.value(QStringLiteral("output_text")));
+        if (content.isEmpty()) content = textValue(object.value(QStringLiteral("output")));
+        if (content.isEmpty()) content = textValue(object.value(QStringLiteral("content")));
+        if (content.isEmpty()) content = textValue(object.value(QStringLiteral("text")));
+    }
+    if (content.trimmed().isEmpty()) {
+        markshot::debugLog("translation", "LLM response shape unsupported: %s", body.left(400).constData());
+        const QString apiError = document.isObject()
+            ? document.object().value(QStringLiteral("error")).toObject().value(QStringLiteral("message")).toString()
+            : QString();
+        failWith(apiError.isEmpty()
+                     ? (document.isObject() && document.object().value(QStringLiteral("choices")).toArray().isEmpty()
+                            ? QStringLiteral("llm response missing choices or output text")
+                            : QStringLiteral("llm response missing message content"))
+                     : QStringLiteral("llm response: %1").arg(apiError));
+        return;
+    }
     QHash<int, QString> translations;
     QString parseError;
     if (!parseTranslationContent(content, &translations, &parseError)) {
