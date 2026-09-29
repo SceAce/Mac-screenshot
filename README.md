@@ -2,6 +2,8 @@
 
 Mark Shot 是一个基于 Qt 6 的 macOS 截图和标注工具，支持区域截图、窗口自动吸附、标注、剪贴板、贴图悬浮窗口、Apple Vision OCR 和 OCR 文本翻译。
 
+当前的项目基于[mark-shot](https://github.com/jswysnemc/mark-shot)二开,原功能[README](./README.zh-CN.md)；
+
 当前 macOS 移植版本面向 macOS 14 及以上，CI 和发布包以 Apple Silicon（arm64）为主。Linux/Windows 的旧代码仍保留在仓库中，但 macOS 使用原生 ScreenCaptureKit、CoreGraphics 和 Apple Vision 实现截图、窗口检测和 OCR。
 
 ## 功能概览
