@@ -56,6 +56,8 @@ QJsonObject defaultAppConfigRoot(const QString &windowDetectionCommand)
     QJsonObject capture;
     capture.insert(QStringLiteral("wayland"), wayland);
     capture.insert(QStringLiteral("doubleClickAction"), QStringLiteral("copy"));
+    capture.insert(QStringLiteral("selectionColor"),
+                   theme::kAccent.name(QColor::HexRgb).toUpper());
     QJsonObject selectionLoupe;
     selectionLoupe.insert(QStringLiteral("enabled"), false);
     capture.insert(QStringLiteral("selectionLoupe"), selectionLoupe);

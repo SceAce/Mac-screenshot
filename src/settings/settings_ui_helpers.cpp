@@ -208,9 +208,13 @@ QKeySequenceEdit *addShortcutRow(QFormLayout *form, const QString &label)
 
 QString colorButtonStyleSheet(const QColor &color)
 {
-    const QString name = color.isValid()
-        ? color.name(QColor::HexRgb).toUpper()
-        : markshot::theme::kDefaultAnnotationColor.name(QColor::HexRgb).toUpper();
+    const QColor effectiveColor = color.isValid()
+        ? color
+        : markshot::theme::kDefaultAnnotationColor;
+    const QString name = effectiveColor.name(QColor::HexRgb).toUpper();
+    const QString textColor = effectiveColor.lightness() >= 145
+        ? QStringLiteral("#0F172A")
+        : QStringLiteral("#F8FAFC");
     return QStringLiteral(
                "QPushButton {"
                " min-height: 30px;"
@@ -218,11 +222,11 @@ QString colorButtonStyleSheet(const QColor &color)
                " border-radius: 8px;"
                " border: 1px solid #334155;"
                " background: %1;"
-               " color: #0F172A;"
+               " color: %2;"
                " font-weight: 700;"
                "}"
                "QPushButton:hover { border-color: #5EEAD4; }")
-        .arg(name);
+        .arg(name, textColor);
 }
 
 }  // namespace markshot::settings

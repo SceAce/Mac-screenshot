@@ -164,6 +164,11 @@ void writeCaptureSettings(QJsonObject *root, const CaptureSettings &settings)
                    settings.hideOwnWindows);
     setNestedValue(root, {QStringLiteral("capture"), QStringLiteral("doubleClickAction")},
                    captureDoubleClickActionName(settings.doubleClickAction));
+    const QColor selectionColor = settings.selectionColor.isValid()
+        ? settings.selectionColor
+        : QColor(94, 234, 212);
+    setNestedValue(root, {QStringLiteral("capture"), QStringLiteral("selectionColor")},
+                   selectionColor.name(QColor::HexRgb).toUpper());
     setNestedValue(root,
                    {QStringLiteral("capture"),
                     QStringLiteral("selectionLoupe"),

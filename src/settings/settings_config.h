@@ -33,6 +33,7 @@ struct CaptureSettings {
     bool kdeKwinScreenshotEnabled = true;
     bool hideOwnWindows = true;
     CaptureDoubleClickAction doubleClickAction = CaptureDoubleClickAction::Copy;
+    QColor selectionColor = QColor(94, 234, 212);
     bool selectionLoupeEnabled = false;
 };
 

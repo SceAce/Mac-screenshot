@@ -4,9 +4,11 @@
 #include "ui/i18n.h"
 
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QFormLayout>
 #include <QFrame>
+#include <QPushButton>
 #include <QVBoxLayout>
 
 namespace markshot::settings {
@@ -47,6 +49,21 @@ SettingsPageCapture::SettingsPageCapture(QWidget *parent)
                                  static_cast<int>(CaptureDoubleClickAction::Pin));
     m_doubleClickAction->addItem(MS_TR("Cancel Capture"),
                                  static_cast<int>(CaptureDoubleClickAction::Cancel));
+    m_selectionColor = new QPushButton;
+    m_selectionColor->setCursor(Qt::PointingHandCursor);
+    m_selectionColor->setToolTip(
+        MS_TR("Color used for the capture selection and window snap outline."));
+    form->addRow(MS_TR("Selection Color"), m_selectionColor);
+    connect(m_selectionColor, &QPushButton::clicked, this, [this] {
+        const QColor selected =
+            QColorDialog::getColor(m_selectionColorValue, this, MS_TR("Selection Color"));
+        if (!selected.isValid()) {
+            return;
+        }
+        m_selectionColorValue = selected;
+        m_selectionColorValue.setAlpha(255);
+        updateSelectionColorButton();
+    });
     m_selectionLoupe = addSwitchRow(form,
                                     MS_TR("Selection Loupe"),
                                     MS_TR("Show a magnifier near the cursor and nudge the pointer with arrow keys."));
@@ -64,6 +81,8 @@ void SettingsPageCapture::setConfig(const SettingsConfig &config)
     const int doubleClickIndex =
         m_doubleClickAction->findData(static_cast<int>(config.capture.doubleClickAction));
     m_doubleClickAction->setCurrentIndex(doubleClickIndex >= 0 ? doubleClickIndex : 0);
+    m_selectionColorValue = config.capture.selectionColor;
+    updateSelectionColorButton();
     m_selectionLoupe->setChecked(config.capture.selectionLoupeEnabled);
 }
 
@@ -80,7 +99,18 @@ void SettingsPageCapture::updateConfig(SettingsConfig *config) const
     config->capture.hideOwnWindows = m_hideOwnWindows->isChecked();
     config->capture.doubleClickAction =
         static_cast<CaptureDoubleClickAction>(m_doubleClickAction->currentData().toInt());
+    config->capture.selectionColor = m_selectionColorValue;
     config->capture.selectionLoupeEnabled = m_selectionLoupe->isChecked();
+}
+
+void SettingsPageCapture::updateSelectionColorButton()
+{
+    if (!m_selectionColorValue.isValid()) {
+        m_selectionColorValue = QColor(94, 234, 212);
+    }
+    m_selectionColorValue.setAlpha(255);
+    m_selectionColor->setText(m_selectionColorValue.name(QColor::HexRgb).toUpper());
+    m_selectionColor->setStyleSheet(colorButtonStyleSheet(m_selectionColorValue));
 }
 
 }  // namespace markshot::settings

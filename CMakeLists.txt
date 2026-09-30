@@ -157,6 +157,8 @@ qt_add_executable(mark-shot
     src/capture_double_click_action_config.cpp
     src/selection_loupe_config.cpp
     src/selection_loupe_config.h
+    src/selection_frame_config.cpp
+    src/selection_frame_config.h
     src/capture_freeze_scope.cpp
     src/capture_freeze_scope.h
     src/capture_freeze_scope_config.cpp

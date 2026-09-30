@@ -6,6 +6,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QPushButton;
 
 namespace markshot::settings {
 
@@ -29,7 +30,11 @@ private:
     QCheckBox *m_hideOwnWindows = nullptr;
     QComboBox *m_freezeScope = nullptr;
     QComboBox *m_doubleClickAction = nullptr;
+    QPushButton *m_selectionColor = nullptr;
+    QColor m_selectionColorValue{94, 234, 212};
     QCheckBox *m_selectionLoupe = nullptr;
+
+    void updateSelectionColorButton();
 };
 
 }  // namespace markshot::settings

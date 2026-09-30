@@ -377,13 +377,13 @@ void ShotWindow::paintEvent(QPaintEvent *event)
         }
         painter.restore();
 
-        painter.setPen(QPen(QColor(94, 234, 212), 2.0));
+        painter.setPen(QPen(m_selectionFrameColor, 2.0));
         painter.setBrush(Qt::NoBrush);
         painter.drawRoundedRect(widgetSelection, 3.0, 3.0);
 
         if (m_tool == Tool::Move && !m_fullscreenAnnotation) {
             painter.setPen(Qt::NoPen);
-            painter.setBrush(QColor(94, 234, 212));
+            painter.setBrush(m_selectionFrameColor);
             const QVector<QPointF> handles = {
                 widgetSelection.topLeft(), QPointF(widgetSelection.center().x(), widgetSelection.top()), widgetSelection.topRight(),
                 QPointF(widgetSelection.left(), widgetSelection.center().y()), QPointF(widgetSelection.right(), widgetSelection.center().y()),
@@ -420,8 +420,10 @@ void ShotWindow::paintEvent(QPaintEvent *event)
             || m_startupTool == StartupTool::CodeScanner
             || recordingModeForStartupTool(m_startupTool).has_value())) {
         const QRectF hoverWidget = imageRectToWidget(QRectF(*m_hoveredWindowRect));
-        painter.setPen(QPen(QColor(94, 234, 212), 2.0));
-        painter.setBrush(QColor(94, 234, 212, 32));
+        QColor hoverFill = m_selectionFrameColor;
+        hoverFill.setAlpha(32);
+        painter.setPen(QPen(m_selectionFrameColor, 2.0));
+        painter.setBrush(hoverFill);
         painter.drawRect(hoverWidget);
     }
 

@@ -656,6 +656,7 @@ private:
     // Selection and annotation interaction state. All geometry here is stored in
     // image coordinates so export and live painting share the same data model.
     QRectF m_selection;
+    QColor m_selectionFrameColor{94, 234, 212};
     // 持久化选区历史的会话内缓存与浏览位置（issue #79）。历史存全局逻辑
     // 坐标，应用到当前帧时经 imageRectFromGeometry 换算回图像坐标。
     QVector<QRect> m_selectionHistory;

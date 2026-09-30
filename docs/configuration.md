@@ -40,6 +40,7 @@ Mark Shot reads application settings from `~/.config/mark-shot/config.json` on L
   },
   "capture": {
     "hideOwnWindows": true,
+    "selectionColor": "#5EEAD4",
     "selectionLoupe": {
       "enabled": false
     },
@@ -175,6 +176,7 @@ To enable thinking, change `"disabled"` to `"enabled"`; do not use the literal v
 | `capture.hideOwnWindows` | Boolean | `true` | Whether the screenshot backend should exclude Mark Shot windows from captured frames. The Capture settings switch applies to the next screenshot immediately without restarting the application. Alias: `screenshot.hideOwnWindowsDuringCapture`. |
 | `capture.wayland.kde.kwinScreenshot.enabled` | Boolean | `true` | Whether to enable KWin `org.kde.KWin.ScreenShot2` restricted D-Bus interface screenshot capture on KDE Wayland. If disabled, fallback to standard Portal capture. |
 | `capture.doubleClickAction` | String | `"copy"` | Action performed when double clicking an empty area inside the selection, so a capture can be finished without moving to the toolbar. Supported values: `none` (keep the previous behavior), `copy` (copy to clipboard and close), `save` (save to the configured folder and close), `save-as` (open the save dialog), `pin` (pin the selection to the screen) and `cancel` (discard the capture). Double clicking a text annotation still opens the text editor and the Select tool still inserts a polyline anchor. Setting the value to `false` also disables the gesture. Configurable from the Capture settings page. |
+| `capture.selectionColor` | String | `"#5EEAD4"` | Color of the capture selection border, resize handles, and window-snap outline. Accepts `#RRGGBB` or a Qt color name and is configurable from the Capture settings page. Invalid values fall back to the default teal. |
 | `capture.selectionLoupe.enabled` | Boolean | `false` | Whether region selection shows a cursor loupe and allows arrow-key pointer nudging. Disabled by default. On Wayland, if the compositor rejects cursor warping, Mark Shot hides the system pointer and draws a software crosshair at the logical position; clicks and drags use that point. Configurable from the Capture settings page. `capture.selectionLoupeEnabled` is also accepted. |
 | `debug.enabled` | Boolean | `false` | Enables debug logging on Linux and Windows. CLI `--debug` / `--no-debug` override this value; `DEBUG=1` still enables logging unless `--no-debug` is set. |
 | `debug.logPath` | String | system temp `mark-shot-scroll.log` | Debug log destination. CLI `--debug-log` overrides this value; `MARK_SHOT_DEBUG_LOG` remains supported when no config or CLI path is set. |
